@@ -19,6 +19,47 @@ use font_kit::source::SystemSource;
 use font_kit::properties::{Properties, Style, Weight};
 use font_kit::family_name::FamilyName;
 
+// App layout constants
+const MIN_SIDEBAR_WIDTH: f32 = 170.0;
+const MAX_SIDEBAR_WIDTH: f32 = 400.0;
+const DEFAULT_SIDEBAR_WIDTH: f32 = 130.0;
+const WINDOW_BORDER_WIDTH: f32 = 1.0;
+
+// Title bar constants
+const TITLE_BAR_HEIGHT: f32 = 30.0;
+const TITLE_BAR_SIDE_MARGIN: f32 = 12.0;
+const ICON_SIZE: f32 = 20.0;
+const ICON_PADDING: f32 = 8.0;
+const BUTTON_WIDTH: f32 = 48.0;
+const CLOSE_X_SIZE: f32 = 6.0;
+const CLOSE_X_SIZE_HOVER: f32 = 8.0;
+const MAX_ICON_SIZE: f32 = 6.0;
+const MIN_ICON_SIZE: f32 = 6.0;
+
+pub struct YasshApp {
+    app_config: AppConfig,
+    persistence: PersistenceManager,
+    session_manager: SessionManager,
+    session_manager_ui: SessionManagerUi,
+    tab_bar: TabBar,
+    config_dialog: ConfigDialog,
+    options_dialog: OptionsDialog,
+    input_handler: InputHandler,
+    selection_managers: std::collections::HashMap<Uuid, SelectionManager>,
+    clipboard: Option<Clipboard>,
+    sidebar_visible: bool,
+    folder_rename_dialog: Option<(Uuid, String)>,
+    confirm_delete_session: Option<Uuid>,
+    confirm_delete_folder: Option<Uuid>,
+    terminal_focus_id: egui::Id,
+    show_about_dialog: bool,
+    theme_applied: bool,
+    frame_count: u64,
+    last_sidebar_width: f32,
+    current_font: String,
+}
+
+
 fn debug_log(msg: &str) {
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
@@ -63,43 +104,6 @@ fn setup_terminal_font(ctx: &Context, font_name: &str) {
     ctx.set_fonts(fonts);
 }
 
-// App layout constants
-const MIN_SIDEBAR_WIDTH: f32 = 170.0;
-const MAX_SIDEBAR_WIDTH: f32 = 400.0;
-const DEFAULT_SIDEBAR_WIDTH: f32 = 130.0;
-
-// Title bar constants
-const TITLE_BAR_HEIGHT: f32 = 30.0;
-const ICON_SIZE: f32 = 20.0;
-const ICON_PADDING: f32 = 8.0;
-const BUTTON_WIDTH: f32 = 46.0;
-const CLOSE_X_SIZE: f32 = 6.0;
-const CLOSE_X_SIZE_HOVER: f32 = 8.0;
-const MAX_ICON_SIZE: f32 = 6.0;
-const MIN_ICON_SIZE: f32 = 6.0;
-
-pub struct YasshApp {
-    app_config: AppConfig,
-    persistence: PersistenceManager,
-    session_manager: SessionManager,
-    session_manager_ui: SessionManagerUi,
-    tab_bar: TabBar,
-    config_dialog: ConfigDialog,
-    options_dialog: OptionsDialog,
-    input_handler: InputHandler,
-    selection_managers: std::collections::HashMap<Uuid, SelectionManager>,
-    clipboard: Option<Clipboard>,
-    sidebar_visible: bool,
-    folder_rename_dialog: Option<(Uuid, String)>,
-    confirm_delete_session: Option<Uuid>,
-    confirm_delete_folder: Option<Uuid>,
-    terminal_focus_id: egui::Id,
-    show_about_dialog: bool,
-    theme_applied: bool,
-    frame_count: u64,
-    last_sidebar_width: f32,
-    current_font: String,
-}
 
 impl YasshApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -375,7 +379,9 @@ impl YasshApp {
         let theme_colors = ThemeColors::for_theme(self.app_config.theme);
         
         TopBottomPanel::top("menu_bar")
-            .frame(egui::Frame::NONE.fill(theme_colors.title_bar_bg))
+            .frame(egui::Frame::NONE
+                .fill(theme_colors.title_bar_bg)
+                .inner_margin(egui::Margin { left: TITLE_BAR_SIDE_MARGIN as i8, right: 0, top: 0, bottom: 0 }))
             .resizable(false)
             .height_range(std::ops::RangeInclusive::new(TITLE_BAR_HEIGHT, TITLE_BAR_HEIGHT))
             .show(ctx, |ui| {
@@ -387,7 +393,6 @@ impl YasshApp {
                 ui.set_height(TITLE_BAR_HEIGHT);
                 ui.horizontal(|ui| {
                     // Program icon on the left
-                    ui.add_space(ICON_PADDING);
                     let icon_rect = ui.allocate_rect(
                         egui::Rect::from_min_size(ui.cursor().left_top(), egui::Vec2::new(ICON_SIZE, ICON_SIZE)),
                         egui::Sense::click()
@@ -419,7 +424,7 @@ impl YasshApp {
                     ui.add_space(ICON_PADDING);
                     // Menu bar centered vertically with padding
                     ui.vertical(|ui| {
-                        ui.add_space(2.0);
+                        ui.add_space(4.0);
                         egui::MenuBar::new().ui(ui, |ui| {
                         // File menu
                         ui.menu_button("File", |ui| {
@@ -526,14 +531,16 @@ impl YasshApp {
                         if close_response.clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
+                        // Draw X - ensure it's centered in the button
+                        let button_rect = close_response.rect;
+                        let center = button_rect.center();
                         if close_response.hovered() {
                             ui.painter().rect_filled(
-                                close_response.rect,
+                                button_rect,
                                 0.0,
                                 theme_colors.close_button_hover
                             );
                             // Draw X on hover
-                            let center = close_response.rect.center();
                             ui.painter().line_segment(
                                 [egui::Pos2::new(center.x - CLOSE_X_SIZE_HOVER, center.y - CLOSE_X_SIZE_HOVER), egui::Pos2::new(center.x + CLOSE_X_SIZE_HOVER, center.y + CLOSE_X_SIZE_HOVER)],
                                 egui::Stroke::new(1.5, theme_colors.close_button_hover_text)
@@ -544,7 +551,6 @@ impl YasshApp {
                             );
                         } else {
                             // Draw X normally
-                            let center = close_response.rect.center();
                             ui.painter().line_segment(
                                 [egui::Pos2::new(center.x - CLOSE_X_SIZE, center.y - CLOSE_X_SIZE), egui::Pos2::new(center.x + CLOSE_X_SIZE, center.y + CLOSE_X_SIZE)],
                                 egui::Stroke::new(1.0, theme_colors.title_bar_text)
@@ -912,6 +918,24 @@ impl YasshApp {
 
 impl eframe::App for YasshApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Draw window border
+        egui::Area::new(egui::Id::new("window_border"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(0.0, 0.0))
+            .show(ctx, |ui| {
+                let screen_rect = ctx.content_rect();
+                let border_color = if ctx.style().visuals.dark_mode {
+                    Color32::from_rgba_unmultiplied(100, 100, 100, 255)
+                } else {
+                    Color32::from_rgba_unmultiplied(150, 150, 150, 255)
+                };
+                ui.painter().rect_stroke(
+                    screen_rect,
+                    0.0,
+                    egui::Stroke::new(WINDOW_BORDER_WIDTH, border_color),
+                    egui::StrokeKind::Inside,
+                );
+            });
         // Process keyboard input FIRST before any UI to prevent egui from consuming events
         self.process_keyboard_input(ctx);
         // Apply theme only once on first frame
