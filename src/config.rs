@@ -153,7 +153,7 @@ pub enum AutoReconnect {
 
 impl Default for AutoReconnect {
     fn default() -> Self {
-        Self::Manual
+        Self::OnTabFocus
     }
 }
 

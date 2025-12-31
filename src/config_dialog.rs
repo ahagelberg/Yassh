@@ -313,12 +313,12 @@ impl ConfigDialog {
                     egui::ComboBox::from_id_salt("auto_reconnect")
                         .selected_text(match self.config.auto_reconnect {
                             AutoReconnect::Manual => "Manual",
-                            AutoReconnect::OnTabFocus => "On tab focus",
+                            AutoReconnect::OnTabFocus => "On focus",
                             AutoReconnect::Immediate => "Immediate",
                         })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut self.config.auto_reconnect, AutoReconnect::Manual, "Manual");
-                            ui.selectable_value(&mut self.config.auto_reconnect, AutoReconnect::OnTabFocus, "On tab focus");
+                            ui.selectable_value(&mut self.config.auto_reconnect, AutoReconnect::OnTabFocus, "On focus");
                             ui.selectable_value(&mut self.config.auto_reconnect, AutoReconnect::Immediate, "Immediate");
                         });
                 });
