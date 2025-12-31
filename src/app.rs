@@ -379,9 +379,7 @@ impl YasshApp {
         let theme_colors = ThemeColors::for_theme(self.app_config.theme);
         
         TopBottomPanel::top("menu_bar")
-            .frame(egui::Frame::NONE
-                .fill(theme_colors.title_bar_bg)
-                .inner_margin(egui::Margin { left: TITLE_BAR_SIDE_MARGIN as i8, right: 0, top: 0, bottom: 0 }))
+            .frame(egui::Frame::NONE.fill(theme_colors.title_bar_bg))
             .resizable(false)
             .height_range(std::ops::RangeInclusive::new(TITLE_BAR_HEIGHT, TITLE_BAR_HEIGHT))
             .show(ctx, |ui| {
@@ -392,6 +390,8 @@ impl YasshApp {
                 }
                 ui.set_height(TITLE_BAR_HEIGHT);
                 ui.horizontal(|ui| {
+                    // Add left margin manually (not using inner_margin to avoid reducing available width)
+                    ui.add_space(TITLE_BAR_SIDE_MARGIN);
                     // Program icon on the left
                     let icon_rect = ui.allocate_rect(
                         egui::Rect::from_min_size(ui.cursor().left_top(), egui::Vec2::new(ICON_SIZE, ICON_SIZE)),
@@ -951,10 +951,45 @@ impl eframe::App for YasshApp {
                 setup_terminal_font(ctx, &self.current_font);
             }
         }
-        // Update all sessions - request repaint if there was SSH activity
-        let had_activity = self.session_manager.update_all();
+        // Update all sessions - request repaint only when data is actually received
+        let mut had_activity = self.session_manager.update_all();
+        // Process any events that arrived during or after the initial update
+        // This ensures we catch events that arrive between frames
+        // We limit iterations to avoid blocking the UI thread
+        const MAX_EVENT_PROCESSING_ITERATIONS: usize = 10;
+        for _ in 0..MAX_EVENT_PROCESSING_ITERATIONS {
+            let mut found_events = false;
+            for session in self.session_manager.sessions_mut() {
+                if let Some(connection) = &session.connection {
+                    // Check if there are events waiting
+                    if connection.try_recv().is_some() {
+                        found_events = true;
+                        // Process all available events for this session
+                        if session.update() {
+                            had_activity = true;
+                        }
+                        break; // Process one session at a time to be fair
+                    }
+                }
+            }
+            if !found_events {
+                break; // No more events, we're done
+            }
+        }
+        // Check if there are active connected sessions that might receive data
+        let has_active_sessions = self.session_manager.sessions()
+            .iter()
+            .any(|s| matches!(s.state(), crate::ssh::connection::ConnectionState::Connected));
+        
         if had_activity {
-            ctx.request_repaint();
+            // Request repaint when data is received
+            // Use request_repaint_after with minimal delay to ensure event loop wakes up
+            // This is necessary because request_repaint() alone may not wake an idle event loop
+            ctx.request_repaint_after(std::time::Duration::from_millis(1));
+        } else if has_active_sessions {
+            // Even if no activity this frame, keep checking for data from active sessions
+            // Use a short delay to avoid wasting CPU while still being responsive
+            ctx.request_repaint_after(std::time::Duration::from_millis(16)); // ~60 FPS polling
         }
         // Close sessions that had natural disconnects
         let sessions_to_close: Vec<Uuid> = self.session_manager.sessions()
