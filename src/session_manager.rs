@@ -187,7 +187,7 @@ impl SessionManagerUi {
                 .default_open(folder.expanded)
                 .flatten(false)
                 .context_menu(|ui| {
-                    if ui.button("New Session in Group").clicked() {
+                    if ui.button("New Session").clicked() {
                         *action.borrow_mut() = Some(SessionManagerAction::NewSessionInFolder(folder_id));
                         ui.close();
                     }
