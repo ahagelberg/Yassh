@@ -1,0 +1,67 @@
+[package]
+name = "yassh"
+version = "0.1.0"
+edition = "2021"
+description = "A modern SSH terminal emulator for Windows"
+authors = ["Yassh Developers"]
+
+[dependencies]
+# GUI framework
+egui = "0.33.3"
+eframe = { version = "0.33.3", default-features = true }
+egui_ltreeview = "0.6"
+
+# SSH client
+ssh2 = "0.9"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Clipboard
+arboard = "3"
+
+# File dialogs
+rfd = "0.15"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Unique IDs
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Directory paths
+dirs = "5"
+
+# C library bindings
+libc = "0.2"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Font enumeration
+font-kit = "0.14"
+
+# Windows-specific dependencies
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Media_Audio", 
+    "Win32_System_Com", 
+    "Win32_UI_Shell",
+    "Win32_System_Console",
+    "Win32_Foundation"
+] }
+
+[profile.release]
+opt-level = 3
+lto = true
+

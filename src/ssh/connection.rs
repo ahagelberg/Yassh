@@ -1,0 +1,326 @@
+use crate::config::{AuthMethod, BackspaceKey, LineEnding, ResizeMethod, SessionConfig};
+use anyhow::{Context, Result};
+use ssh2::{Channel, Session};
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+
+fn debug_log(msg: &str) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("yassh_debug.log")
+    {
+        let _ = writeln!(file, "{}", msg);
+        let _ = file.flush();
+    }
+}
+
+fn format_bytes(data: &[u8]) -> String {
+    const MAX_DISPLAY_LEN: usize = 100;
+    let display_data = if data.len() > MAX_DISPLAY_LEN {
+        &data[..MAX_DISPLAY_LEN]
+    } else {
+        data
+    };
+    let formatted: String = display_data.iter().map(|&b| {
+        match b {
+            0x00..=0x1F | 0x7F => format!("\\x{:02X}", b),
+            _ => (b as char).to_string(),
+        }
+    }).collect();
+    if data.len() > MAX_DISPLAY_LEN {
+        format!("{}...", formatted)
+    } else {
+        formatted
+    }
+}
+
+// Connection constants
+const READ_BUFFER_SIZE: usize = 4096;
+const CHANNEL_CHECK_INTERVAL_MS: u64 = 10;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConnectionState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Error(String),
+}
+
+pub enum SshEvent {
+    Connected,
+    Data(Vec<u8>),
+    Disconnected,
+    Error(String),
+}
+
+pub enum SshCommand {
+    Write(Vec<u8>),
+    Resize(u32, u32),
+    Disconnect,
+}
+
+pub struct SshConnection {
+    state: Arc<Mutex<ConnectionState>>,
+    event_rx: Receiver<SshEvent>,
+    command_tx: Sender<SshCommand>,
+    config: SessionConfig,
+}
+
+impl SshConnection {
+    pub fn new(config: SessionConfig) -> Self {
+        let (event_tx, event_rx) = mpsc::channel();
+        let (command_tx, command_rx) = mpsc::channel();
+        let state = Arc::new(Mutex::new(ConnectionState::Disconnected));
+        let connection = Self {
+            state: state.clone(),
+            event_rx,
+            command_tx,
+            config: config.clone(),
+        };
+        let state_clone = state.clone();
+        thread::spawn(move || {
+            Self::connection_thread(config, state_clone, event_tx, command_rx);
+        });
+        connection
+    }
+
+    fn connection_thread(
+        config: SessionConfig,
+        state: Arc<Mutex<ConnectionState>>,
+        event_tx: Sender<SshEvent>,
+        command_rx: Receiver<SshCommand>,
+    ) {
+        debug_log(&format!("[SSH {}] Connecting to {}:{}", config.id, config.host, config.port));
+        *state.lock().unwrap() = ConnectionState::Connecting;
+        let result = Self::establish_connection(&config);
+        match result {
+            Ok((session, mut channel)) => {
+                debug_log(&format!("[SSH {}] Connected", config.id));
+                *state.lock().unwrap() = ConnectionState::Connected;
+                let _ = event_tx.send(SshEvent::Connected);
+                Self::run_session(&config, session, &mut channel, &state, &event_tx, &command_rx);
+            }
+            Err(e) => {
+                let error_msg = format!("{:#}", e);
+                debug_log(&format!("[SSH {}] Error: {}", config.id, error_msg));
+                *state.lock().unwrap() = ConnectionState::Error(error_msg.clone());
+                let _ = event_tx.send(SshEvent::Error(error_msg));
+            }
+        }
+        debug_log(&format!("[SSH {}] Disconnected", config.id));
+        *state.lock().unwrap() = ConnectionState::Disconnected;
+        let _ = event_tx.send(SshEvent::Disconnected);
+    }
+
+    fn establish_connection(config: &SessionConfig) -> Result<(Session, Channel)> {
+        let address = format!("{}:{}", config.host, config.port);
+        let timeout = config.timeout;
+        let tcp = TcpStream::connect_timeout(
+            &address.parse().context("Invalid address")?,
+            timeout,
+        )
+        .context("Failed to connect to host")?;
+        tcp.set_read_timeout(Some(Duration::from_millis(CHANNEL_CHECK_INTERVAL_MS)))?;
+        let mut session = Session::new().context("Failed to create SSH session")?;
+        session.set_tcp_stream(tcp);
+        session.handshake().context("SSH handshake failed")?;
+        match config.auth_method {
+            AuthMethod::Password => {
+                let password = config.password.as_deref().unwrap_or("");
+                session
+                    .userauth_password(&config.username, password)
+                    .context("Password authentication failed")?;
+            }
+            AuthMethod::PrivateKey => {
+                let key_path = config
+                    .private_key_path
+                    .as_ref()
+                    .context("Private key path not specified")?;
+                session
+                    .userauth_pubkey_file(
+                        &config.username,
+                        None,
+                        key_path,
+                        config.password.as_deref(),
+                    )
+                    .context("Public key authentication failed")?;
+            }
+        }
+        if !session.authenticated() {
+            anyhow::bail!("Authentication failed");
+        }
+        if config.compression {
+            // Compression is handled automatically by libssh2
+        }
+        let mut channel = session.channel_session().context("Failed to open channel")?;
+        channel.request_pty("xterm-256color", None, None)?;
+        channel.shell().context("Failed to start shell")?;
+        if let Some(screen_name) = &config.screen_session {
+            let screen_cmd = format!(
+                "screen -x {} || screen -S {}\n",
+                screen_name, screen_name
+            );
+            channel.write_all(screen_cmd.as_bytes())?;
+        }
+        Ok((session, channel))
+    }
+
+    fn run_session(
+        config: &SessionConfig,
+        session: Session,
+        channel: &mut Channel,
+        _state: &Arc<Mutex<ConnectionState>>,
+        event_tx: &Sender<SshEvent>,
+        command_rx: &Receiver<SshCommand>,
+    ) {
+        // Set non-blocking mode so reads don't block the command processing
+        session.set_blocking(false);
+        
+        let mut read_buffer = [0u8; READ_BUFFER_SIZE];
+        let keepalive_interval = if config.keep_alive {
+            Some(config.keepalive_interval)
+        } else {
+            None
+        };
+        let mut last_keepalive = std::time::Instant::now();
+        loop {
+            match command_rx.try_recv() {
+                Ok(SshCommand::Write(data)) => {
+                    debug_log(&format!("[SSH {}] TX: {} bytes: {:?}", config.id, data.len(), format_bytes(&data)));
+                    if let Err(e) = channel.write_all(&data) {
+                        debug_log(&format!("[SSH {}] Write error: {:?}", config.id, e));
+                        break;
+                    }
+                }
+                Ok(SshCommand::Resize(cols, rows)) => {
+                    match config.resize_method {
+                        ResizeMethod::Ssh => {
+                            let _ = channel.request_pty_size(cols, rows, None, None);
+                        }
+                        ResizeMethod::Ansi => {
+                            let resize_seq = format!("\x1b[8;{};{}t", rows, cols);
+                            let _ = channel.write_all(resize_seq.as_bytes());
+                        }
+                        ResizeMethod::Stty => {
+                            let stty_cmd = format!("stty rows {} cols {}\n", rows, cols);
+                            let _ = channel.write_all(stty_cmd.as_bytes());
+                        }
+                        ResizeMethod::XTerm => {
+                            let xterm_seq = format!("\x1b[4;{};{}t", rows * 16, cols * 8);
+                            let _ = channel.write_all(xterm_seq.as_bytes());
+                        }
+                        ResizeMethod::None => {}
+                    }
+                }
+                Ok(SshCommand::Disconnect) => {
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    break;
+                }
+            }
+            match channel.read(&mut read_buffer) {
+                Ok(0) => {
+                    if channel.eof() {
+                        debug_log(&format!("[SSH {}] EOF", config.id));
+                        break;
+                    }
+                }
+                Ok(n) => {
+                    let data = read_buffer[..n].to_vec();
+                    debug_log(&format!("[SSH {}] RX: {} bytes: {:?}", config.id, n, format_bytes(&data)));
+                    if event_tx.send(SshEvent::Data(data)).is_err() {
+                        break;
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(e) => {
+                    debug_log(&format!("[SSH {}] Read error: {:?}", config.id, e));
+                    break;
+                }
+            }
+            if let Some(interval) = keepalive_interval {
+                if last_keepalive.elapsed() >= interval {
+                    if session.keepalive_send().is_err() {
+                        break;
+                    }
+                    last_keepalive = std::time::Instant::now();
+                }
+            }
+        }
+    }
+
+    pub fn state(&self) -> ConnectionState {
+        self.state.lock().unwrap().clone()
+    }
+
+    pub fn try_recv(&self) -> Option<SshEvent> {
+        self.event_rx.try_recv().ok()
+    }
+
+    pub fn send(&self, data: &[u8]) {
+        let data = self.convert_line_endings(data);
+        let _ = self.command_tx.send(SshCommand::Write(data));
+    }
+
+    #[allow(dead_code)]
+    pub fn send_key(&self, key: &str) {
+        self.send(key.as_bytes());
+    }
+
+    pub fn resize(&self, cols: u32, rows: u32) {
+        let _ = self.command_tx.send(SshCommand::Resize(cols, rows));
+    }
+
+    pub fn disconnect(&self) {
+        let _ = self.command_tx.send(SshCommand::Disconnect);
+    }
+
+    fn convert_line_endings(&self, data: &[u8]) -> Vec<u8> {
+        match self.config.line_ending {
+            LineEnding::Lf => data.to_vec(),
+            LineEnding::CrLf => {
+                let mut result = Vec::with_capacity(data.len() * 2);
+                for &byte in data {
+                    if byte == b'\n' {
+                        result.push(b'\r');
+                    }
+                    result.push(byte);
+                }
+                result
+            }
+            LineEnding::Cr => {
+                data.iter().map(|&b| if b == b'\n' { b'\r' } else { b }).collect()
+            }
+        }
+    }
+
+    pub fn backspace_sequence(&self) -> &[u8] {
+        match self.config.backspace_key {
+            BackspaceKey::Del => &[0x7F],
+            BackspaceKey::CtrlH => &[0x08],
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn config(&self) -> &SessionConfig {
+        &self.config
+    }
+}
+
+impl Drop for SshConnection {
+    fn drop(&mut self) {
+        self.disconnect();
+    }
+}
+

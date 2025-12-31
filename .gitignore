@@ -1,0 +1,6 @@
+/.cursor
+/.cursorrules
+/assets
+/Cargo.lock
+/target
+/yassh_debug.log
