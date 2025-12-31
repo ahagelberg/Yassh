@@ -752,6 +752,16 @@ impl eframe::App for YasshApp {
         if had_activity {
             ctx.request_repaint();
         }
+        // Close sessions that had natural disconnects
+        let sessions_to_close: Vec<Uuid> = self.session_manager.sessions()
+            .iter()
+            .filter(|s| s.should_close())
+            .map(|s| s.id)
+            .collect();
+        for session_id in sessions_to_close {
+            self.session_manager.close_session(session_id);
+            self.selection_managers.remove(&session_id);
+        }
         // Handle bells
         let bells = self.session_manager.collect_pending_bells();
         for bell in bells {

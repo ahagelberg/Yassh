@@ -15,6 +15,7 @@ pub struct ManagedSession {
     reconnect_pending: ReconnectState,
     reconnect_attempts: u32,
     is_focused: bool,
+    should_close: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -43,6 +44,7 @@ impl ManagedSession {
             reconnect_pending: ReconnectState::None,
             reconnect_attempts: 0,
             is_focused: false,
+            should_close: false,
         }
     }
 
@@ -161,11 +163,17 @@ impl ManagedSession {
                         self.renderer.scroll_to_bottom(self.emulator.buffer());
                     }
                 }
-                SshEvent::Disconnected => {
+                SshEvent::Disconnected { natural } => {
                     // Clear the connection since the thread has exited
                     self.connection = None;
-                    if self.error_message.is_none() {
-                        self.schedule_reconnect();
+                    if natural {
+                        // Natural close (user exited shell) - mark for removal
+                        self.should_close = true;
+                    } else {
+                        // Irregular close (network error, etc.) - keep tab open, mark as disconnected
+                        if self.error_message.is_none() {
+                            self.schedule_reconnect();
+                        }
                     }
                 }
                 SshEvent::Error(msg) => {
@@ -198,10 +206,19 @@ impl ManagedSession {
     }
 
     pub fn state(&self) -> ConnectionState {
-        self.connection
-            .as_ref()
-            .map(|c| c.state())
-            .unwrap_or(ConnectionState::Disconnected)
+        if self.should_close {
+            // Natural close - still show as disconnected until tab is closed
+            ConnectionState::Disconnected
+        } else {
+            self.connection
+                .as_ref()
+                .map(|c| c.state())
+                .unwrap_or(ConnectionState::Disconnected)
+        }
+    }
+
+    pub fn should_close(&self) -> bool {
+        self.should_close
     }
 
     #[allow(dead_code)]

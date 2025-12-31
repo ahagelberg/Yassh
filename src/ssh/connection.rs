@@ -57,7 +57,7 @@ pub enum ConnectionState {
 pub enum SshEvent {
     Connected,
     Data(Vec<u8>),
-    Disconnected,
+    Disconnected { natural: bool },
     Error(String),
 }
 
@@ -115,9 +115,8 @@ impl SshConnection {
                 let _ = event_tx.send(SshEvent::Error(error_msg));
             }
         }
-        debug_log(&format!("[SSH {}] Disconnected", config.id));
+        debug_log(&format!("[SSH {}] Connection thread ended", config.id));
         *state.lock().unwrap() = ConnectionState::Disconnected;
-        let _ = event_tx.send(SshEvent::Disconnected);
     }
 
     fn establish_connection(config: &SessionConfig) -> Result<(Session, Channel)> {
@@ -191,12 +190,15 @@ impl SshConnection {
             None
         };
         let mut last_keepalive = std::time::Instant::now();
+        #[allow(unused_assignments)]
+        let mut disconnect_natural = false;
         loop {
             match command_rx.try_recv() {
                 Ok(SshCommand::Write(data)) => {
                     debug_log(&format!("[SSH {}] TX: {} bytes: {:?}", config.id, data.len(), format_bytes(&data)));
                     if let Err(e) = channel.write_all(&data) {
                         debug_log(&format!("[SSH {}] Write error: {:?}", config.id, e));
+                        disconnect_natural = false;
                         break;
                     }
                 }
@@ -221,10 +223,12 @@ impl SshConnection {
                     }
                 }
                 Ok(SshCommand::Disconnect) => {
+                    disconnect_natural = true;
                     break;
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
+                    disconnect_natural = false;
                     break;
                 }
             }
@@ -232,6 +236,7 @@ impl SshConnection {
                 Ok(0) => {
                     if channel.eof() {
                         debug_log(&format!("[SSH {}] EOF", config.id));
+                        disconnect_natural = true;
                         break;
                     }
                 }
@@ -239,6 +244,7 @@ impl SshConnection {
                     let data = read_buffer[..n].to_vec();
                     debug_log(&format!("[SSH {}] RX: {} bytes: {:?}", config.id, n, format_bytes(&data)));
                     if event_tx.send(SshEvent::Data(data)).is_err() {
+                        disconnect_natural = false;
                         break;
                     }
                 }
@@ -246,18 +252,21 @@ impl SshConnection {
                 Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
                 Err(e) => {
                     debug_log(&format!("[SSH {}] Read error: {:?}", config.id, e));
+                    disconnect_natural = false;
                     break;
                 }
             }
             if let Some(interval) = keepalive_interval {
                 if last_keepalive.elapsed() >= interval {
                     if session.keepalive_send().is_err() {
+                        disconnect_natural = false;
                         break;
                     }
                     last_keepalive = std::time::Instant::now();
                 }
             }
         }
+        let _ = event_tx.send(SshEvent::Disconnected { natural: disconnect_natural });
     }
 
     pub fn state(&self) -> ConnectionState {
