@@ -377,11 +377,81 @@ impl SessionFolder {
 pub enum Theme {
     Dark,
     Light,
+    #[serde(rename = "dark_blue")]
+    DarkBlue,
+    #[serde(rename = "light_blue")]
+    LightBlue,
+    #[serde(rename = "dark_green")]
+    DarkGreen,
 }
 
 impl Default for Theme {
     fn default() -> Self {
         Self::Dark
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ThemeColors {
+    pub title_bar_bg: Color32,
+    pub title_bar_text: Color32,
+    pub title_bar_icon: Color32,
+    pub button_hover: Color32,
+    #[allow(dead_code)]
+    pub button_hover_text: Color32,
+    pub close_button_hover: Color32,
+    pub close_button_hover_text: Color32,
+}
+
+impl ThemeColors {
+    pub fn for_theme(theme: Theme) -> Self {
+        match theme {
+            Theme::Dark => Self {
+                title_bar_bg: Color32::from_rgb(30, 30, 30),
+                title_bar_text: Color32::from_rgb(204, 204, 204),
+                title_bar_icon: Color32::from_rgb(204, 204, 204),
+                button_hover: Color32::from_rgba_unmultiplied(255, 255, 255, 20),
+                button_hover_text: Color32::from_rgb(204, 204, 204),
+                close_button_hover: Color32::from_rgb(232, 17, 35),
+                close_button_hover_text: Color32::WHITE,
+            },
+            Theme::Light => Self {
+                title_bar_bg: Color32::from_rgb(251, 251, 251),
+                title_bar_text: Color32::from_rgb(51, 51, 51),
+                title_bar_icon: Color32::from_rgb(51, 51, 51),
+                button_hover: Color32::from_rgba_unmultiplied(0, 0, 0, 20),
+                button_hover_text: Color32::from_rgb(51, 51, 51),
+                close_button_hover: Color32::from_rgb(232, 17, 35),
+                close_button_hover_text: Color32::WHITE,
+            },
+            Theme::DarkBlue => Self {
+                title_bar_bg: Color32::from_rgb(25, 30, 40),
+                title_bar_text: Color32::from_rgb(200, 210, 230),
+                title_bar_icon: Color32::from_rgb(200, 210, 230),
+                button_hover: Color32::from_rgba_unmultiplied(100, 150, 255, 30),
+                button_hover_text: Color32::from_rgb(200, 210, 230),
+                close_button_hover: Color32::from_rgb(232, 17, 35),
+                close_button_hover_text: Color32::WHITE,
+            },
+            Theme::LightBlue => Self {
+                title_bar_bg: Color32::from_rgb(240, 245, 255),
+                title_bar_text: Color32::from_rgb(30, 50, 80),
+                title_bar_icon: Color32::from_rgb(30, 50, 80),
+                button_hover: Color32::from_rgba_unmultiplied(100, 150, 255, 30),
+                button_hover_text: Color32::from_rgb(30, 50, 80),
+                close_button_hover: Color32::from_rgb(232, 17, 35),
+                close_button_hover_text: Color32::WHITE,
+            },
+            Theme::DarkGreen => Self {
+                title_bar_bg: Color32::from_rgb(20, 35, 25),
+                title_bar_text: Color32::from_rgb(180, 220, 180),
+                title_bar_icon: Color32::from_rgb(180, 220, 180),
+                button_hover: Color32::from_rgba_unmultiplied(100, 200, 100, 30),
+                button_hover_text: Color32::from_rgb(180, 220, 180),
+                close_button_hover: Color32::from_rgb(232, 17, 35),
+                close_button_hover_text: Color32::WHITE,
+            },
+        }
     }
 }
 

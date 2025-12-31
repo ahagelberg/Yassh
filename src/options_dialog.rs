@@ -68,10 +68,16 @@ impl OptionsDialog {
                 .selected_text(match self.config.theme {
                     Theme::Dark => "Dark",
                     Theme::Light => "Light",
+                    Theme::DarkBlue => "Dark Blue",
+                    Theme::LightBlue => "Light Blue",
+                    Theme::DarkGreen => "Dark Green",
                 })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.config.theme, Theme::Dark, "Dark");
                     ui.selectable_value(&mut self.config.theme, Theme::Light, "Light");
+                    ui.selectable_value(&mut self.config.theme, Theme::DarkBlue, "Dark Blue");
+                    ui.selectable_value(&mut self.config.theme, Theme::LightBlue, "Light Blue");
+                    ui.selectable_value(&mut self.config.theme, Theme::DarkGreen, "Dark Green");
                 });
         });
         ui.add_space(16.0);

@@ -1,4 +1,4 @@
-use crate::config::{AppConfig, BellNotification, SessionFolder, Theme};
+use crate::config::{AppConfig, BellNotification, SessionFolder, Theme, ThemeColors};
 use crate::config_dialog::{ConfigDialog, DialogMode, DialogResult};
 use crate::input::{InputHandler, InputResult};
 use crate::options_dialog::{OptionsDialog, OptionsResult};
@@ -67,6 +67,16 @@ fn setup_terminal_font(ctx: &Context, font_name: &str) {
 const MIN_SIDEBAR_WIDTH: f32 = 170.0;
 const MAX_SIDEBAR_WIDTH: f32 = 400.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 130.0;
+
+// Title bar constants
+const TITLE_BAR_HEIGHT: f32 = 30.0;
+const ICON_SIZE: f32 = 20.0;
+const ICON_PADDING: f32 = 8.0;
+const BUTTON_WIDTH: f32 = 46.0;
+const CLOSE_X_SIZE: f32 = 6.0;
+const CLOSE_X_SIZE_HOVER: f32 = 8.0;
+const MAX_ICON_SIZE: f32 = 6.0;
+const MIN_ICON_SIZE: f32 = 6.0;
 
 pub struct YasshApp {
     app_config: AppConfig,
@@ -142,6 +152,24 @@ impl YasshApp {
         let visuals = match theme {
             Theme::Dark => egui::Visuals::dark(),
             Theme::Light => egui::Visuals::light(),
+            Theme::DarkBlue => {
+                let mut visuals = egui::Visuals::dark();
+                visuals.panel_fill = Color32::from_rgb(25, 30, 40);
+                visuals.window_fill = Color32::from_rgb(20, 25, 35);
+                visuals
+            },
+            Theme::LightBlue => {
+                let mut visuals = egui::Visuals::light();
+                visuals.panel_fill = Color32::from_rgb(240, 245, 255);
+                visuals.window_fill = Color32::from_rgb(250, 252, 255);
+                visuals
+            },
+            Theme::DarkGreen => {
+                let mut visuals = egui::Visuals::dark();
+                visuals.panel_fill = Color32::from_rgb(20, 35, 25);
+                visuals.window_fill = Color32::from_rgb(15, 30, 20);
+                visuals
+            },
         };
         ctx.set_visuals(visuals);
     }
@@ -344,103 +372,255 @@ impl YasshApp {
     }
 
     fn show_menu_bar(&mut self, ctx: &Context) {
-        TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                // File menu
-                ui.menu_button("File", |ui| {
-                    if ui.button("New Session...").clicked() {
-                        self.config_dialog.open_new();
-                        ui.close();
-                    }
-                    if ui.button("Quick Connect...").clicked() {
-                        self.config_dialog.open_quick_connect();
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("New Folder").clicked() {
-                        let folder = SessionFolder::new(String::from("New Folder"));
-                        let folder_id = folder.id;
-                        self.persistence.add_folder(folder);
-                        let _ = self.persistence.save();
-                        self.folder_rename_dialog = Some((folder_id, String::from("New Folder")));
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("Exit").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                });
-                // Edit menu
-                ui.menu_button("Edit", |ui| {
-                    let has_active = self.session_manager.active_session().is_some();
-                    if ui.add_enabled(has_active, egui::Button::new("Copy")).clicked() {
-                        self.copy_selection();
-                        ui.close();
-                    }
-                    if ui.add_enabled(has_active, egui::Button::new("Paste")).clicked() {
-                        self.paste();
-                        ui.close();
-                    }
-                });
-                // View menu
-                ui.menu_button("View", |ui| {
-                    let sidebar_text = if self.sidebar_visible { "Hide Sidebar" } else { "Show Sidebar" };
-                    if ui.button(sidebar_text).clicked() {
-                        self.sidebar_visible = !self.sidebar_visible;
-                        ui.close();
-                    }
-                });
-                // Session menu
-                ui.menu_button("Session", |ui| {
-                    let has_active = self.session_manager.active_session().is_some();
-                    if ui.add_enabled(has_active, egui::Button::new("Reconnect")).clicked() {
-                        if let Some(session) = self.session_manager.active_session_mut() {
-                            session.disconnect();
-                            session.connect();
+        let theme_colors = ThemeColors::for_theme(self.app_config.theme);
+        
+        TopBottomPanel::top("menu_bar")
+            .frame(egui::Frame::NONE.fill(theme_colors.title_bar_bg))
+            .resizable(false)
+            .height_range(std::ops::RangeInclusive::new(TITLE_BAR_HEIGHT, TITLE_BAR_HEIGHT))
+            .show(ctx, |ui| {
+                // Make the title bar draggable
+                let title_bar_response = ui.interact(ui.available_rect_before_wrap(), ui.id().with("title_bar"), egui::Sense::drag());
+                if title_bar_response.dragged() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                ui.set_height(TITLE_BAR_HEIGHT);
+                ui.horizontal(|ui| {
+                    // Program icon on the left
+                    ui.add_space(ICON_PADDING);
+                    let icon_rect = ui.allocate_rect(
+                        egui::Rect::from_min_size(ui.cursor().left_top(), egui::Vec2::new(ICON_SIZE, ICON_SIZE)),
+                        egui::Sense::click()
+                    );
+                    // Draw a simple terminal icon (two horizontal lines representing a terminal window)
+                    let painter = ui.painter();
+                    let icon_color = theme_colors.title_bar_icon;
+                    let icon_center = icon_rect.rect.center();
+                    // Draw terminal window frame
+                    painter.rect_stroke(
+                        icon_rect.rect,
+                        0.0,
+                        egui::Stroke::new(1.5, icon_color),
+                        egui::StrokeKind::Outside,
+                    );
+                    // Draw terminal prompt lines
+                    let line_y1 = icon_center.y - 3.0;
+                    let line_y2 = icon_center.y + 3.0;
+                    let line_x_start = icon_rect.rect.left() + 3.0;
+                    let line_x_end = icon_rect.rect.right() - 3.0;
+                    painter.line_segment(
+                        [egui::Pos2::new(line_x_start, line_y1), egui::Pos2::new(line_x_end, line_y1)],
+                        egui::Stroke::new(1.0, icon_color),
+                    );
+                    painter.line_segment(
+                        [egui::Pos2::new(line_x_start, line_y2), egui::Pos2::new(line_x_end * 0.6, line_y2)],
+                        egui::Stroke::new(1.0, icon_color),
+                    );
+                    ui.add_space(ICON_PADDING);
+                    // Menu bar centered vertically with padding
+                    ui.vertical(|ui| {
+                        ui.add_space(2.0);
+                        egui::MenuBar::new().ui(ui, |ui| {
+                        // File menu
+                        ui.menu_button("File", |ui| {
+                            if ui.button("New Session...").clicked() {
+                                self.config_dialog.open_new();
+                                ui.close();
+                            }
+                            if ui.button("Quick Connect...").clicked() {
+                                self.config_dialog.open_quick_connect();
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("New Folder").clicked() {
+                                let folder = SessionFolder::new(String::from("New Folder"));
+                                let folder_id = folder.id;
+                                self.persistence.add_folder(folder);
+                                let _ = self.persistence.save();
+                                self.folder_rename_dialog = Some((folder_id, String::from("New Folder")));
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Exit").clicked() {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                        });
+                        // Edit menu
+                        ui.menu_button("Edit", |ui| {
+                            let has_active = self.session_manager.active_session().is_some();
+                            if ui.add_enabled(has_active, egui::Button::new("Copy")).clicked() {
+                                self.copy_selection();
+                                ui.close();
+                            }
+                            if ui.add_enabled(has_active, egui::Button::new("Paste")).clicked() {
+                                self.paste();
+                                ui.close();
+                            }
+                        });
+                        // View menu
+                        ui.menu_button("View", |ui| {
+                            let sidebar_text = if self.sidebar_visible { "Hide Sidebar" } else { "Show Sidebar" };
+                            if ui.button(sidebar_text).clicked() {
+                                self.sidebar_visible = !self.sidebar_visible;
+                                ui.close();
+                            }
+                        });
+                        // Session menu
+                        ui.menu_button("Session", |ui| {
+                            let has_active = self.session_manager.active_session().is_some();
+                            if ui.add_enabled(has_active, egui::Button::new("Reconnect")).clicked() {
+                                if let Some(session) = self.session_manager.active_session_mut() {
+                                    session.disconnect();
+                                    session.connect();
+                                }
+                                ui.close();
+                            }
+                            if ui.add_enabled(has_active, egui::Button::new("Disconnect")).clicked() {
+                                if let Some(session) = self.session_manager.active_session_mut() {
+                                    session.disconnect();
+                                }
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.add_enabled(has_active, egui::Button::new("Edit Connection Settings...")).clicked() {
+                                if let Some(session) = self.session_manager.active_session() {
+                                    // Edit the connection's runtime settings, not the stored session
+                                    let id = session.id;
+                                    self.config_dialog.open_edit_connection(id, session.config.clone());
+                                }
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.add_enabled(has_active, egui::Button::new("Close Tab")).clicked() {
+                                if let Some(session) = self.session_manager.active_session() {
+                                    let id = session.id;
+                                    self.session_manager.close_session(id);
+                                    self.selection_managers.remove(&id);
+                                }
+                                ui.close();
+                            }
+                        });
+                        // Options menu
+                        ui.menu_button("Options", |ui| {
+                            if ui.button("Preferences...").clicked() {
+                                self.options_dialog.open(self.app_config.clone());
+                                ui.close();
+                            }
+                        });
+                        // Help menu
+                        ui.menu_button("Help", |ui| {
+                            if ui.button("About Yassh").clicked() {
+                                self.show_about_dialog = true;
+                                ui.close();
+                            }
+                        });
+                        });
+                    });
+                    // Window controls on the right
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Close button
+                        let close_response = ui.add_sized(
+                            [BUTTON_WIDTH, TITLE_BAR_HEIGHT],
+                            egui::Button::new("").fill(Color32::TRANSPARENT).frame(false)
+                        );
+                        if close_response.clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
-                        ui.close();
-                    }
-                    if ui.add_enabled(has_active, egui::Button::new("Disconnect")).clicked() {
-                        if let Some(session) = self.session_manager.active_session_mut() {
-                            session.disconnect();
+                        if close_response.hovered() {
+                            ui.painter().rect_filled(
+                                close_response.rect,
+                                0.0,
+                                theme_colors.close_button_hover
+                            );
+                            // Draw X on hover
+                            let center = close_response.rect.center();
+                            ui.painter().line_segment(
+                                [egui::Pos2::new(center.x - CLOSE_X_SIZE_HOVER, center.y - CLOSE_X_SIZE_HOVER), egui::Pos2::new(center.x + CLOSE_X_SIZE_HOVER, center.y + CLOSE_X_SIZE_HOVER)],
+                                egui::Stroke::new(1.5, theme_colors.close_button_hover_text)
+                            );
+                            ui.painter().line_segment(
+                                [egui::Pos2::new(center.x + CLOSE_X_SIZE_HOVER, center.y - CLOSE_X_SIZE_HOVER), egui::Pos2::new(center.x - CLOSE_X_SIZE_HOVER, center.y + CLOSE_X_SIZE_HOVER)],
+                                egui::Stroke::new(1.5, theme_colors.close_button_hover_text)
+                            );
+                        } else {
+                            // Draw X normally
+                            let center = close_response.rect.center();
+                            ui.painter().line_segment(
+                                [egui::Pos2::new(center.x - CLOSE_X_SIZE, center.y - CLOSE_X_SIZE), egui::Pos2::new(center.x + CLOSE_X_SIZE, center.y + CLOSE_X_SIZE)],
+                                egui::Stroke::new(1.0, theme_colors.title_bar_text)
+                            );
+                            ui.painter().line_segment(
+                                [egui::Pos2::new(center.x + CLOSE_X_SIZE, center.y - CLOSE_X_SIZE), egui::Pos2::new(center.x - CLOSE_X_SIZE, center.y + CLOSE_X_SIZE)],
+                                egui::Stroke::new(1.0, theme_colors.title_bar_text)
+                            );
                         }
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.add_enabled(has_active, egui::Button::new("Edit Connection Settings...")).clicked() {
-                        if let Some(session) = self.session_manager.active_session() {
-                            // Edit the connection's runtime settings, not the stored session
-                            let id = session.id;
-                            self.config_dialog.open_edit_connection(id, session.config.clone());
+                        // Maximize/Restore button
+                        let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                        let max_response = ui.add_sized(
+                            [BUTTON_WIDTH, TITLE_BAR_HEIGHT],
+                            egui::Button::new("").fill(Color32::TRANSPARENT).frame(false)
+                        );
+                        if max_response.clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
                         }
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.add_enabled(has_active, egui::Button::new("Close Tab")).clicked() {
-                        if let Some(session) = self.session_manager.active_session() {
-                            let id = session.id;
-                            self.session_manager.close_session(id);
-                            self.selection_managers.remove(&id);
+                        if max_response.hovered() {
+                            ui.painter().rect_filled(
+                                max_response.rect,
+                                0.0,
+                                theme_colors.button_hover
+                            );
                         }
-                        ui.close();
-                    }
-                });
-                // Options menu
-                ui.menu_button("Options", |ui| {
-                    if ui.button("Preferences...").clicked() {
-                        self.options_dialog.open(self.app_config.clone());
-                        ui.close();
-                    }
-                });
-                // Help menu
-                ui.menu_button("Help", |ui| {
-                    if ui.button("About Yassh").clicked() {
-                        self.show_about_dialog = true;
-                        ui.close();
-                    }
+                        // Draw maximize/restore icon
+                        let center = max_response.rect.center();
+                        let icon_color = theme_colors.title_bar_text;
+                        if is_maximized {
+                            // Restore icon (two overlapping squares)
+                            ui.painter().rect_stroke(
+                                egui::Rect::from_center_size(center, egui::Vec2::new(MAX_ICON_SIZE * 1.5, MAX_ICON_SIZE * 1.5)),
+                                0.0,
+                                egui::Stroke::new(1.0, icon_color),
+                                egui::StrokeKind::Outside,
+                            );
+                            ui.painter().rect_stroke(
+                                egui::Rect::from_center_size(center + egui::Vec2::new(MAX_ICON_SIZE * 0.5, MAX_ICON_SIZE * 0.5), egui::Vec2::new(MAX_ICON_SIZE * 1.5, MAX_ICON_SIZE * 1.5)),
+                                0.0,
+                                egui::Stroke::new(1.0, icon_color),
+                                egui::StrokeKind::Outside,
+                            );
+                        } else {
+                            // Maximize icon (single square)
+                            ui.painter().rect_stroke(
+                                egui::Rect::from_center_size(center, egui::Vec2::new(MAX_ICON_SIZE * 1.5, MAX_ICON_SIZE * 1.5)),
+                                0.0,
+                                egui::Stroke::new(1.0, icon_color),
+                                egui::StrokeKind::Outside,
+                            );
+                        }
+                        // Minimize button
+                        let min_response = ui.add_sized(
+                            [BUTTON_WIDTH, TITLE_BAR_HEIGHT],
+                            egui::Button::new("").fill(Color32::TRANSPARENT).frame(false)
+                        );
+                        if min_response.clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+                        if min_response.hovered() {
+                            ui.painter().rect_filled(
+                                min_response.rect,
+                                0.0,
+                                theme_colors.button_hover
+                            );
+                        }
+                        // Draw minimize icon (horizontal line)
+                        let center = min_response.rect.center();
+                        let icon_color = theme_colors.title_bar_text;
+                        ui.painter().line_segment(
+                            [egui::Pos2::new(center.x - MIN_ICON_SIZE, center.y), egui::Pos2::new(center.x + MIN_ICON_SIZE, center.y)],
+                            egui::Stroke::new(1.0, icon_color)
+                        );
+                    });
                 });
             });
-        });
     }
 
     fn show_about_dialog(&mut self, ctx: &Context) {
@@ -817,7 +997,7 @@ impl eframe::App for YasshApp {
             // Tab bar
             if !tab_data.is_empty() {
                 TopBottomPanel::top("tabs")
-                    .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2)))
+                    .frame(egui::Frame::NONE)
                     .show_inside(ui, |ui| {
                         let action = self.tab_bar.show_with_data(ui, &tab_data, active_id);
                         self.handle_tab_action(action);
