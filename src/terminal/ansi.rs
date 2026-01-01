@@ -6,7 +6,7 @@ const ANSI_COLORS: [Color32; 16] = [
     Color32::from_rgb(170, 0, 0),     // Red
     Color32::from_rgb(0, 170, 0),     // Green
     Color32::from_rgb(170, 85, 0),    // Yellow (brown)
-    Color32::from_rgb(0, 0, 170),     // Blue
+    Color32::from_rgb(50, 100, 255),   // Blue
     Color32::from_rgb(170, 0, 170),   // Magenta
     Color32::from_rgb(0, 170, 170),   // Cyan
     Color32::from_rgb(170, 170, 170), // White

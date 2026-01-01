@@ -514,6 +514,11 @@ impl YasshApp {
                                 ui.close();
                             }
                             ui.separator();
+                            if ui.button("Preferences...").clicked() {
+                                self.options_dialog.open(self.app_config.clone());
+                                ui.close();
+                            }
+                            ui.separator();
                             if ui.button("Exit").clicked() {
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
@@ -570,13 +575,6 @@ impl YasshApp {
                                     self.session_manager.close_session(id);
                                     self.selection_managers.remove(&id);
                                 }
-                                ui.close();
-                            }
-                        });
-                        // Options menu
-                        ui.menu_button("Options", |ui| {
-                            if ui.button("Preferences...").clicked() {
-                                self.options_dialog.open(self.app_config.clone());
                                 ui.close();
                             }
                         });
