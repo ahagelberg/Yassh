@@ -502,17 +502,21 @@ impl TerminalBuffer {
             if let Some(line) = self.get_line(row) {
                 let col_start = if row == start_row { start_col } else { 0 };
                 let col_end = if row == end_row { end_col + 1 } else { line.len() };
+                let mut line_text = String::new();
                 for col in col_start..col_end.min(line.len()) {
                     if let Some(cell) = line.get(col) {
-                        result.push(cell.ch);
+                        line_text.push(cell.ch);
                     }
                 }
+                // Trim trailing whitespace from each line before adding to result
+                let trimmed = line_text.trim_end();
+                result.push_str(trimmed);
                 if row < end_row && !line.is_wrapped() {
                     result.push('\n');
                 }
             }
         }
-        result.trim_end().to_string()
+        result
     }
 
     pub fn default_fg(&self) -> Color32 {

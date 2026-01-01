@@ -167,14 +167,27 @@ impl TerminalRenderer {
             if reverse_video {
                 std::mem::swap(&mut fg, &mut bg);
             }
-            if is_selected {
+            let selection_bg = if is_selected {
                 std::mem::swap(&mut fg, &mut bg);
-            }
+                Some(bg)
+            } else {
+                None
+            };
             if invert_colors {
                 std::mem::swap(&mut fg, &mut bg);
             }
-            if bg != Color32::TRANSPARENT && bg != buffer.default_bg() {
+            if bg != Color32::TRANSPARENT && bg != buffer.default_bg() && !is_selected {
                 painter.rect_filled(cell_rect, 0.0, bg);
+            }
+            if let Some(sel_bg) = selection_bg {
+                // Draw selection highlight 2 pixels above text, 2 pixels less from bottom
+                const SELECTION_TOP_OFFSET: f32 = 2.0;
+                const SELECTION_BOTTOM_OFFSET: f32 = 2.0;
+                let selection_rect = Rect::from_min_max(
+                    Pos2::new(cell_rect.min.x, cell_rect.min.y - SELECTION_TOP_OFFSET),
+                    Pos2::new(cell_rect.max.x, cell_rect.max.y - SELECTION_BOTTOM_OFFSET),
+                );
+                painter.rect_filled(selection_rect, 0.0, sel_bg);
             }
             if cell.ch != ' ' {
                 let font_id = FontId::new(self.font_size, FontFamily::Monospace);

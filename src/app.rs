@@ -78,13 +78,13 @@ impl egui::Plugin for TabInterceptionPlugin {
     fn input_hook(&mut self, input: &mut egui::RawInput) {
         // Only intercept Tab events if the flag is set (when there's an active session)
         if TAB_INTERCEPTION_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
-            // Filter out Tab key events from the raw input and store them for the app to process
-            // But don't consume Ctrl+Tab or Ctrl+Shift+Tab as they're used for session switching
+            // Filter out ALL Tab key events (including Ctrl+Tab) from the raw input
+            // This prevents egui's default focus navigation behavior for all Tab variants
             input.events.retain(|event| {
                 if let egui::Event::Key { key, modifiers, pressed: true, .. } = event {
-                    if *key == egui::Key::Tab && !modifiers.ctrl {
-                        // Store the Tab event for the app to process, but remove it from egui's event stream
-                        // Only for plain Tab and Shift+Tab, not Ctrl+Tab combinations
+                    if *key == egui::Key::Tab {
+                        // Store ALL Tab events (plain, Shift+Tab, Ctrl+Tab, Ctrl+Shift+Tab) for app processing
+                        // Remove from egui's event stream to prevent focus navigation
                         if let Ok(mut queue) = INTERCEPTED_TAB_EVENTS.lock() {
                             queue.push((*modifiers, *key));
                         }
@@ -363,14 +363,61 @@ impl YasshApp {
         }
     }
 
+    fn close_active_session(&mut self) {
+        if let Some(session) = self.session_manager.active_session() {
+            let session_id = session.id;
+            self.session_manager.close_session(session_id);
+            self.selection_managers.remove(&session_id);
+        }
+    }
+
+    fn close_session_by_id(&mut self, id: Uuid) {
+        self.session_manager.close_session(id);
+        self.selection_managers.remove(&id);
+    }
+
+    fn handle_app_shortcut(&mut self, key: egui::Key, modifiers: egui::Modifiers) -> bool {
+        // Returns true if the shortcut was handled, false otherwise
+        if modifiers.ctrl && !modifiers.shift && !modifiers.alt && key == egui::Key::W {
+            self.close_active_session();
+            return true;
+        }
+        if modifiers.ctrl && modifiers.alt && !modifiers.shift && key == egui::Key::C {
+            self.copy_selection();
+            if let Some(session) = self.session_manager.active_session() {
+                if let Some(sel_mgr) = self.selection_managers.get_mut(&session.id) {
+                    sel_mgr.clear();
+                }
+            }
+            return true;
+        }
+        if modifiers.ctrl && modifiers.alt && !modifiers.shift && key == egui::Key::V {
+            self.paste();
+            return true;
+        }
+        if modifiers.ctrl && !modifiers.alt && !modifiers.shift && key == egui::Key::Insert {
+            self.copy_selection();
+            if let Some(session) = self.session_manager.active_session() {
+                if let Some(sel_mgr) = self.selection_managers.get_mut(&session.id) {
+                    sel_mgr.clear();
+                }
+            }
+            return true;
+        }
+        if !modifiers.ctrl && !modifiers.alt && modifiers.shift && key == egui::Key::Insert {
+            self.paste();
+            return true;
+        }
+        false
+    }
+
     fn handle_tab_action(&mut self, action: TabAction) {
         match action {
             TabAction::Select(id) => {
                 self.session_manager.set_active(id);
             }
             TabAction::Close(id) => {
-                self.session_manager.close_session(id);
-                self.selection_managers.remove(&id);
+                self.close_session_by_id(id);
             }
             TabAction::Reconnect(id) => {
                 if let Some(session) = self.session_manager.get_session_mut(id) {
@@ -407,12 +454,26 @@ impl YasshApp {
         let Some(clipboard) = &mut self.clipboard else {
             return;
         };
-        let Ok(text) = clipboard.get_text() else {
+        let Ok(mut text) = clipboard.get_text() else {
             return;
         };
         let Some(session) = self.session_manager.active_session() else {
             return;
         };
+        let session_id = session.id;
+        // Clear selection BEFORE pasting to prevent pasted text from being highlighted
+        // Also finish any active selection to cancel ongoing drags
+        if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
+            // Finish any active selection first to cancel drag
+            if sel_mgr.is_selecting() {
+                sel_mgr.finish();
+            }
+            // Then clear it
+            sel_mgr.clear();
+        }
+        // Normalize clipboard text to \n first, then session.send() will convert to configured format
+        // This prevents double conversion: clipboard \r\n -> normalize to \n -> convert to configured format
+        text = text.replace("\r\n", "\n").replace('\r', "\n");
         let bracketed = session.emulator.bracketed_paste();
         let data = if bracketed {
             format!("\x1b[200~{}\x1b[201~", text)
@@ -420,6 +481,10 @@ impl YasshApp {
             text
         };
         session.send(data.as_bytes());
+        // Clear selection again after sending - ensure it stays cleared
+        if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
+            sel_mgr.clear();
+        }
     }
 
     fn handle_bell(&mut self, notification: BellNotification) {
@@ -570,11 +635,7 @@ impl YasshApp {
                             }
                             ui.separator();
                             if ui.add_enabled(has_active, egui::Button::new("Close Tab")).clicked() {
-                                if let Some(session) = self.session_manager.active_session() {
-                                    let id = session.id;
-                                    self.session_manager.close_session(id);
-                                    self.selection_managers.remove(&id);
-                                }
+                                self.close_active_session();
                                 ui.close();
                             }
                         });
@@ -868,15 +929,60 @@ impl YasshApp {
         let mut key_events: Vec<(egui::Key, egui::Modifiers)> = Vec::new();
         let mut send_ctrl_c = false;
         let mut send_ctrl_x = false;
+        let mut app_shortcuts: Vec<(egui::Key, egui::Modifiers)> = Vec::new();
         ctx.input_mut(|i| {
             // Note: Tab events are now intercepted early in update() before UI processing
             // No need to filter them here again
             // THEN: Process remaining events
             i.events.retain(|event| {
                 match event {
-                    // Intercept Copy/Cut/Paste events - these are Ctrl+C/X/V on Windows
+                    // Handle Key events FIRST to catch app shortcuts before they become Copy/Paste
+                    egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                        // Tab is already intercepted by the plugin
+                        if *key == egui::Key::Tab {
+                            return false; // Should already be intercepted, but be safe
+                        }
+                        if has_active_session {
+                            // Check for app shortcuts - these should NOT be forwarded to server
+                            // Handle them exactly like Ctrl+W
+                            if (modifiers.ctrl && !modifiers.shift && !modifiers.alt && *key == egui::Key::W) ||
+                               (modifiers.ctrl && modifiers.alt && !modifiers.shift && (*key == egui::Key::C || *key == egui::Key::V)) ||
+                               (modifiers.ctrl && !modifiers.alt && !modifiers.shift && *key == egui::Key::Insert) ||
+                               (!modifiers.ctrl && !modifiers.alt && modifiers.shift && *key == egui::Key::Insert) {
+                                // Collect app shortcuts to handle after closure
+                                app_shortcuts.push((*key, *modifiers));
+                                return false; // Consume the event, don't forward - this prevents Copy/Paste events from being generated
+                            }
+                            // Check if Alt is currently held - if so, ignore character keys without Alt modifier
+                            // This prevents Alt+W from also sending plain W
+                            let alt_held = i.modifiers.alt;
+                            if alt_held && !modifiers.alt && self.is_character_key(*key) {
+                                // Alt is held but this key event doesn't have Alt - ignore it to prevent duplication
+                                return false; // Consume the event
+                            }
+                            // Don't forward character keys without modifiers - they come through Text events
+                            // Only forward special keys (arrows, function keys, etc.) or keys with modifiers
+                            if modifiers.ctrl || modifiers.alt || !self.is_character_key(*key) {
+                                // Special key or key with modifier - forward to terminal
+                                key_events.push((*key, *modifiers));
+                            }
+                            // Character keys without modifiers will come through Text events, so we ignore them here
+                            return false; // Consume the event so egui doesn't process it
+                        }
+                        // Let egui handle keys when there's no active session
+                        true
+                    }
+                    // Handle Copy/Paste events - egui converts some key combinations to these
                     egui::Event::Copy => {
                         if has_active_session {
+                            let current_modifiers = i.modifiers;
+                            // Ctrl+Alt+C (app shortcut) - Alt modifier indicates app shortcut
+                            if current_modifiers.alt {
+                                app_shortcuts.push((egui::Key::C, current_modifiers));
+                                return false; // Consume, don't forward
+                            }
+                            // Regular Ctrl+C - forward to terminal
+                            // Note: Ctrl+Insert is handled in Key events, not here
                             send_ctrl_c = true;
                             return false; // Consume the event
                         }
@@ -890,10 +996,19 @@ impl YasshApp {
                         true
                     }
                     egui::Event::Paste(_) => {
-                        // Consume Paste event - Ctrl+V should be forwarded to terminal
-                        // User can use Ctrl+Shift+V for app paste
                         if has_active_session {
-                            // Send Ctrl+V (0x16) to terminal
+                            let current_modifiers = i.modifiers;
+                            // Ctrl+Alt+V (app shortcut) - Alt modifier indicates app shortcut
+                            if current_modifiers.alt {
+                                app_shortcuts.push((egui::Key::V, current_modifiers));
+                                return false; // Consume, don't forward
+                            }
+                            // Shift+Insert (app shortcut) - Shift without Ctrl indicates Shift+Insert
+                            if current_modifiers.shift && !current_modifiers.ctrl {
+                                app_shortcuts.push((egui::Key::Insert, current_modifiers));
+                                return false; // Consume, don't forward
+                            }
+                            // Regular Ctrl+V - forward to terminal
                             key_events.push((egui::Key::V, egui::Modifiers::CTRL));
                             return false;
                         }
@@ -901,31 +1016,28 @@ impl YasshApp {
                     }
                     egui::Event::Text(text) => {
                         // Text events respect keyboard layout - use these for character input
+                        // But don't process Text events when Alt is held - those come through Key events
                         if has_active_session {
-                            text_events.push(text.clone());
+                            let current_modifiers = i.modifiers;
+                            // Only process Text events if Alt is not held
+                            // Alt+key combinations should only come through Key events to avoid duplication
+                            if !current_modifiers.alt {
+                                text_events.push(text.clone());
+                            }
                             return false; // Consume the event
                         }
                         true
-                    }
-                    egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                        // Tab is already filtered out above when there's an active session
-                        // Collect all keys with Ctrl modifier (Ctrl+character combinations)
-                        // Also collect special keys (non-character keys)
-                        // Character keys without Ctrl will come through Text events
-                        if modifiers.ctrl || !self.is_character_key(*key) {
-                            if has_active_session {
-                                key_events.push((*key, *modifiers));
-                                // Consume the event so egui doesn't process it for UI navigation
-                                return false;
-                            }
-                        }
-                        // Let egui handle keys when there's no active session, or character keys without modifiers
-                        !has_active_session
                     }
                     _ => true // Keep other events
                 }
             });
         });
+        
+        // Handle app shortcuts (these are NOT forwarded to server)
+        for (key, modifiers) in app_shortcuts {
+            self.handle_app_shortcut(key, modifiers);
+        }
+        
         // Handle text input (respects keyboard layout)
         for text in text_events {
             if let Some(session) = self.session_manager.active_session() {
@@ -977,28 +1089,8 @@ impl YasshApp {
                 }
             }
         }
-        // Process all key events
+        // Process all key events - forward to terminal
         for (key, modifiers) in key_events {
-            // App shortcuts - checked before forwarding to terminal
-            // Ctrl+W: Close current connection
-            if modifiers.ctrl && !modifiers.shift && !modifiers.alt && key == egui::Key::W {
-                if let Some(session) = self.session_manager.active_session() {
-                    let session_id = session.id;
-                    self.session_manager.close_session(session_id);
-                    self.selection_managers.remove(&session_id);
-                }
-                continue;
-            }
-            // Ctrl+Tab: Next tab
-            if modifiers.ctrl && !modifiers.shift && !modifiers.alt && key == egui::Key::Tab {
-                self.session_manager.next_tab();
-                continue;
-            }
-            // Ctrl+Shift+Tab: Previous tab
-            if modifiers.ctrl && modifiers.shift && !modifiers.alt && key == egui::Key::Tab {
-                self.session_manager.prev_tab();
-                continue;
-            }
             // Forward to terminal
             if let Some(session) = self.session_manager.active_session() {
                 let backspace_seq = session.backspace_sequence().to_vec();
@@ -1049,6 +1141,19 @@ impl eframe::App for YasshApp {
         // Process any Tab events that were intercepted by the plugin
         if let Ok(mut queue) = INTERCEPTED_TAB_EVENTS.lock() {
             for (modifiers, key) in queue.drain(..) {
+                // Handle Ctrl+Tab combinations for terminal switching (don't forward to server)
+                if modifiers.ctrl && !modifiers.alt {
+                    if modifiers.shift {
+                        // Ctrl+Shift+Tab: Previous tab
+                        self.session_manager.prev_tab();
+                    } else {
+                        // Ctrl+Tab: Next tab
+                        self.session_manager.next_tab();
+                    }
+                    // Don't forward Ctrl+Tab combinations to terminal
+                    continue;
+                }
+                // Forward plain Tab and Shift+Tab to terminal
                 if let Some(session) = self.session_manager.active_session() {
                     let backspace_seq = session.backspace_sequence().to_vec();
                     if let InputResult::Forward(data) = self.input_handler.handle_key(key, modifiers, &backspace_seq) {
@@ -1150,8 +1255,7 @@ impl eframe::App for YasshApp {
             .map(|s| s.id)
             .collect();
         for session_id in sessions_to_close {
-            self.session_manager.close_session(session_id);
-            self.selection_managers.remove(&session_id);
+            self.close_session_by_id(session_id);
         }
         // Handle bells
         let bells = self.session_manager.collect_pending_bells();
@@ -1216,6 +1320,10 @@ impl eframe::App for YasshApp {
             }
             // Terminal content
             let dialogs_visible = self.any_dialog_visible();
+            let mut should_copy_on_click = false;
+            let mut should_paste_on_click = false;
+            let mut copy_session_id = None;
+            
             if let Some(session) = self.session_manager.active_session_mut() {
                 let session_id = session.id;
                 let bg_color = session.config.background();
@@ -1305,12 +1413,27 @@ impl eframe::App for YasshApp {
                     }
                 }
 
-                // Request focus for terminal area when clicked
-                if !dialogs_visible && response.clicked() {
+                // Handle left-click: copy selection if present, otherwise request focus
+                if !dialogs_visible && response.clicked() && sel_mgr.selection().is_some() {
+                    should_copy_on_click = true;
+                    copy_session_id = Some(session_id);
+                } else if !dialogs_visible && response.clicked() {
+                    // No selection, just focus the terminal
                     ui.memory_mut(|m| m.request_focus(self.terminal_focus_id));
                 }
+                
+                // Handle right-click: paste from clipboard
+                if !dialogs_visible && response.secondary_clicked() {
+                    should_paste_on_click = true;
+                }
                 // Handle mouse input for selection
-                if response.drag_started() {
+                // Only process drag events if they're from the primary button (left click)
+                // Right-click drags should not create selections
+                let is_primary_drag = ui.input(|i| {
+                    i.pointer.primary_down() && !i.pointer.secondary_down()
+                });
+                
+                if response.drag_started() && sel_mgr.selection().is_none() && is_primary_drag {
                     if let Some(pos) = response.interact_pointer_pos() {
                         if let Some((line, col)) = session.renderer.cell_at_pos(
                             pos,
@@ -1321,7 +1444,7 @@ impl eframe::App for YasshApp {
                         }
                     }
                 }
-                if response.dragged() {
+                if response.dragged() && is_primary_drag {
                     if let Some(pos) = ui.ctx().pointer_latest_pos() {
                         if let Some((line, col)) = session.renderer.cell_at_pos(
                             pos,
@@ -1370,6 +1493,25 @@ impl eframe::App for YasshApp {
                     });
                 });
             }
+            
+            // Handle deferred copy/paste operations after session borrow is released
+            if should_copy_on_click {
+                if let Some(session_id) = copy_session_id {
+                    self.copy_selection();
+                    if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
+                        sel_mgr.clear();
+                    }
+                }
+            }
+            if should_paste_on_click {
+                self.paste();
+                // Clear selection after paste to prevent pasted text from being highlighted
+                if let Some(session) = self.session_manager.active_session() {
+                    if let Some(sel_mgr) = self.selection_managers.get_mut(&session.id) {
+                        sel_mgr.clear();
+                    }
+                }
+            }
         });
     }
 
@@ -1383,3 +1525,4 @@ impl eframe::App for YasshApp {
         let _ = save_app_config(&self.app_config);
     }
 }
+
