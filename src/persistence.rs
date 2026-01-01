@@ -127,7 +127,20 @@ impl PersistenceManager {
                 Vec::new()
             }
         };
+        self.assign_missing_folder_orders();
         Ok(())
+    }
+
+    fn assign_missing_folder_orders(&mut self) {
+        // Check if any folders have order 0 (unassigned)
+        let needs_migration = self.folders.iter().all(|f| f.order == 0) && !self.folders.is_empty();
+        if !needs_migration {
+            return;
+        }
+        // Assign orders based on current position in vector (insertion order)
+        for (index, folder) in self.folders.iter_mut().enumerate() {
+            folder.order = (index + 1) as u32;
+        }
     }
 
     pub fn save(&self) -> Result<()> {
@@ -172,7 +185,9 @@ impl PersistenceManager {
         self.sessions.iter().find(|s| s.id == id)
     }
 
-    pub fn add_folder(&mut self, folder: SessionFolder) {
+    pub fn add_folder(&mut self, mut folder: SessionFolder) {
+        let max_order = self.get_last_folder_order(folder.parent_id);
+        folder.order = max_order + 1;
         self.folders.push(folder);
     }
 
@@ -206,12 +221,13 @@ impl PersistenceManager {
     }
 
     pub fn child_folders(&self, parent_id: Option<Uuid>) -> Vec<&SessionFolder> {
-        self.folders
+        let mut folders: Vec<&SessionFolder> = self.folders
             .iter()
             .filter(|f| f.parent_id == parent_id)
-            .collect()
+            .collect();
+        folders.sort_by_key(|f| f.order);
+        folders
     }
-
 
     pub fn duplicate_session(&mut self, id: Uuid) -> Option<Uuid> {
         let session = self.get_session(id)?.clone();
@@ -221,5 +237,109 @@ impl PersistenceManager {
         let new_id = new_session.id;
         self.add_session(new_session);
         Some(new_id)
+    }
+
+    pub fn get_last_order_in_folder(&self, folder_id: Option<Uuid>) -> u32 {
+        self.sessions
+            .iter()
+            .filter(|s| s.folder_id == folder_id)
+            .map(|s| s.order)
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn get_last_folder_order(&self, parent_id: Option<Uuid>) -> u32 {
+        self.folders
+            .iter()
+            .filter(|f| f.parent_id == parent_id)
+            .map(|f| f.order)
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn move_session(&mut self, session_id: Uuid, target_folder_id: Option<Uuid>, target_order: u32) {
+        let source_folder_id = self.sessions.iter().find(|s| s.id == session_id).map(|s| s.folder_id);
+        let source_folder_id = match source_folder_id {
+            Some(fid) => fid,
+            None => return,
+        };
+        // Shift existing items at or after target_order to make room
+        for session in &mut self.sessions {
+            if session.id != session_id && session.folder_id == target_folder_id && session.order >= target_order {
+                session.order += 1;
+            }
+        }
+        // Now set the moved session's folder and order
+        if let Some(session) = self.sessions.iter_mut().find(|s| s.id == session_id) {
+            session.folder_id = target_folder_id;
+            session.order = target_order;
+        }
+        // Normalize orders in source folder (if different from target)
+        if source_folder_id != target_folder_id {
+            self.normalize_session_orders(source_folder_id);
+        }
+        self.normalize_session_orders(target_folder_id);
+    }
+
+    pub fn move_folder(&mut self, folder_id: Uuid, target_parent_id: Option<Uuid>, target_order: u32) {
+        // Prevent moving folder into itself
+        if Some(folder_id) == target_parent_id {
+            return;
+        }
+        let source_parent_id = self.folders.iter().find(|f| f.id == folder_id).map(|f| f.parent_id);
+        let source_parent_id = match source_parent_id {
+            Some(pid) => pid,
+            None => return,
+        };
+        // Shift existing folders at or after target_order to make room
+        for folder in &mut self.folders {
+            if folder.id != folder_id && folder.parent_id == target_parent_id && folder.order >= target_order {
+                folder.order += 1;
+            }
+        }
+        // Now set the moved folder's parent and order
+        if let Some(folder) = self.folders.iter_mut().find(|f| f.id == folder_id) {
+            folder.parent_id = target_parent_id;
+            folder.order = target_order;
+        }
+        // Normalize orders in source parent (if different from target)
+        if source_parent_id != target_parent_id {
+            self.normalize_folder_orders(source_parent_id);
+        }
+        self.normalize_folder_orders(target_parent_id);
+    }
+
+    pub fn normalize_session_orders(&mut self, folder_id: Option<Uuid>) {
+        let mut sessions: Vec<(Uuid, u32)> = self.sessions
+            .iter()
+            .filter(|s| s.folder_id == folder_id)
+            .map(|s| (s.id, s.order))
+            .collect();
+        sessions.sort_by_key(|(_, order)| *order);
+        for (new_order, (id, _)) in sessions.into_iter().enumerate() {
+            if let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) {
+                session.order = (new_order + 1) as u32;
+            }
+        }
+    }
+
+    pub fn normalize_folder_orders(&mut self, parent_id: Option<Uuid>) {
+        let mut folders: Vec<(Uuid, u32)> = self.folders
+            .iter()
+            .filter(|f| f.parent_id == parent_id)
+            .map(|f| (f.id, f.order))
+            .collect();
+        folders.sort_by_key(|(_, order)| *order);
+        for (new_order, (id, _)) in folders.into_iter().enumerate() {
+            if let Some(folder) = self.folders.iter_mut().find(|f| f.id == id) {
+                folder.order = (new_order + 1) as u32;
+            }
+        }
+    }
+
+    pub fn set_folder_expanded(&mut self, folder_id: Uuid, expanded: bool) {
+        if let Some(folder) = self.folders.iter_mut().find(|f| f.id == folder_id) {
+            folder.expanded = expanded;
+        }
     }
 }

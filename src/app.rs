@@ -84,6 +84,8 @@ fn load_system_font(font_name: &str) -> Option<Vec<u8>> {
     font.copy_font_data().map(|arc| (*arc).clone())
 }
 
+const SYMBOL_FONT_NAME: &str = "symbol_fallback";
+
 fn setup_terminal_font(ctx: &Context, font_name: &str) {
     let mut fonts = FontDefinitions::default();
     // Try to load the requested font
@@ -100,6 +102,19 @@ fn setup_terminal_font(ctx: &Context, font_name: &str) {
         log::info!("Loaded terminal font: {}", font_name);
     } else {
         log::warn!("Could not load font '{}', using default monospace", font_name);
+    }
+    // Add Segoe UI Symbol as fallback for geometric shapes (arrows, etc.)
+    if let Some(symbol_data) = load_system_font("Segoe UI Symbol") {
+        fonts.font_data.insert(
+            SYMBOL_FONT_NAME.to_owned(),
+            Arc::new(FontData::from_owned(symbol_data)),
+        );
+        // Add as fallback for proportional (UI) font
+        fonts.families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .push(SYMBOL_FONT_NAME.to_owned());
+        log::info!("Added Segoe UI Symbol as fallback for UI symbols");
     }
     ctx.set_fonts(fonts);
 }

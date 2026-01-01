@@ -7,6 +7,7 @@ mod persistence;
 mod selection;
 mod session_manager;
 mod session_tree;
+mod session_tree_view;
 mod ssh;
 mod tabs;
 mod terminal;

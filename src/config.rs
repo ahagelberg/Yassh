@@ -360,6 +360,8 @@ pub struct SessionFolder {
     pub parent_id: Option<Uuid>,
     #[serde(default = "default_true")]
     pub expanded: bool,
+    #[serde(default)]
+    pub order: u32,
 }
 
 impl SessionFolder {
@@ -369,6 +371,7 @@ impl SessionFolder {
             name,
             parent_id: None,
             expanded: true,
+            order: 0,
         }
     }
 }

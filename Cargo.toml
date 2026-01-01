@@ -9,7 +9,6 @@ authors = ["Yassh Developers"]
 # GUI framework
 egui = "0.33.3"
 eframe = { version = "0.33.3", default-features = true }
-egui_ltreeview = "0.6"
 
 # SSH client
 ssh2 = "0.9"
