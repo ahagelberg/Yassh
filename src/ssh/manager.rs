@@ -400,31 +400,6 @@ impl SessionManager {
         self.sessions.len()
     }
 
-    pub fn reorder_session(&mut self, session_id: Uuid, target_index: usize) {
-        let Some(current_index) = self.sessions.iter().position(|s| s.id == session_id) else {
-            return;
-        };
-        if current_index == target_index || target_index > self.sessions.len() {
-            return;
-        }
-        let session = self.sessions.remove(current_index);
-        let insert_index = if target_index > current_index {
-            target_index - 1
-        } else {
-            target_index
-        };
-        self.sessions.insert(insert_index, session);
-        // Update active_index if needed
-        if let Some(active) = self.active_index {
-            if active == current_index {
-                self.active_index = Some(insert_index);
-            } else if current_index < active && insert_index >= active {
-                self.active_index = Some(active - 1);
-            } else if current_index > active && insert_index <= active {
-                self.active_index = Some(active + 1);
-            }
-        }
-    }
 
     pub fn collect_pending_bells(&mut self) -> Vec<crate::config::BellNotification> {
         let mut bells = Vec::new();

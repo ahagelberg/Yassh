@@ -1,7 +1,7 @@
 use crate::config::{SessionConfig, SessionFolder};
 use crate::persistence::PersistenceManager;
 use egui::Ui;
-use egui_ltreeview::{TreeView, NodeBuilder, Action, DirPosition};
+use egui_ltreeview::{TreeView, NodeBuilder, Action};
 use uuid::Uuid;
 use std::cell::RefCell;
 
@@ -16,11 +16,6 @@ pub enum SessionManagerAction {
     NewFolder,
     EditFolder(Uuid),
     DeleteFolder(Uuid),
-    MoveSession { session_id: Uuid, folder_id: Option<Uuid> },
-    MoveSessionRelative { session_id: Uuid, target_id: Uuid, before: bool },
-    ReorderSession { session_id: Uuid, target_id: Uuid, before: bool },
-    #[allow(dead_code)]
-    MoveFolder { folder_id: Uuid, parent_id: Option<Uuid> },
 }
 
 // Node ID wrapper to distinguish folders from sessions
@@ -76,6 +71,7 @@ impl SessionManagerUi {
             let tree_id = ui.make_persistent_id("session_tree");
             let context_action: RefCell<Option<SessionManagerAction>> = RefCell::new(None);
             let (_response, actions) = TreeView::new(tree_id)
+                .allow_drag_and_drop(false)
                 .show(ui, |builder| {
                     self.build_tree(builder, persistence, None, &context_action);
                 });
@@ -90,59 +86,6 @@ impl SessionManagerUi {
                         // Double-click or Enter pressed on selection
                         if let Some(NodeId::Session(id)) = activate.selected.first() {
                             action = Some(SessionManagerAction::Connect(*id));
-                        }
-                    }
-                    Action::Move(drag_drop) => {
-                        // Drag and drop completed
-                        if let Some(NodeId::Session(session_id)) = drag_drop.source.first() {
-                            let source_folder = persistence.get_session(*session_id)
-                                .map(|s| s.folder_id)
-                                .flatten();
-                            match (&drag_drop.target, &drag_drop.position) {
-                                // Dropping into a folder (at first/last position)
-                                (NodeId::Folder(folder_id), DirPosition::Last | DirPosition::First) => {
-                                    action = Some(SessionManagerAction::MoveSession {
-                                        session_id: *session_id,
-                                        folder_id: Some(*folder_id),
-                                    });
-                                }
-                                // Dropping onto root
-                                (NodeId::Root, _) => {
-                                    action = Some(SessionManagerAction::MoveSession {
-                                        session_id: *session_id,
-                                        folder_id: None,
-                                    });
-                                }
-                                // Dropping before/after a session
-                                (NodeId::Session(target_id), pos) => {
-                                    let target_folder = persistence.get_session(*target_id)
-                                        .map(|s| s.folder_id)
-                                        .flatten();
-                                    let before = matches!(pos, DirPosition::Before(_));
-                                    if source_folder == target_folder {
-                                        // Reordering within the same folder
-                                        action = Some(SessionManagerAction::ReorderSession {
-                                            session_id: *session_id,
-                                            target_id: *target_id,
-                                            before,
-                                        });
-                                    } else {
-                                        // Moving to a different folder and positioning relative to target
-                                        action = Some(SessionManagerAction::MoveSessionRelative {
-                                            session_id: *session_id,
-                                            target_id: *target_id,
-                                            before,
-                                        });
-                                    }
-                                }
-                                // Dropping before/after a folder - move to that folder's parent (root)
-                                (NodeId::Folder(_), DirPosition::Before(_) | DirPosition::After(_)) => {
-                                    action = Some(SessionManagerAction::MoveSession {
-                                        session_id: *session_id,
-                                        folder_id: None,
-                                    });
-                                }
-                            }
                         }
                     }
                     _ => {}

@@ -27,7 +27,6 @@ const TAB_SPACING: f32 = 2.0;
 const INACTIVE_TAB_ALPHA: u8 = 80;
 const ACTIVE_BRIGHTEN_AMOUNT: f32 = 0.3;
 const ACTIVE_DARKEN_AMOUNT: f32 = 0.3;
-const DROP_INDICATOR_WIDTH: f32 = 3.0;
 
 #[derive(Clone)]
 pub enum TabAction {
@@ -35,14 +34,11 @@ pub enum TabAction {
     Close(Uuid),
     Reconnect(Uuid),
     EditSettings(Uuid),
-    Reorder { dragged_id: Uuid, target_index: usize },
     None,
 }
 
 pub struct TabBar {
     hovered_close: Option<Uuid>,
-    dragging: Option<Uuid>,
-    drop_target_index: Option<usize>,
 }
 
 impl Default for TabBar {
@@ -55,8 +51,6 @@ impl TabBar {
     pub fn new() -> Self {
         Self {
             hovered_close: None,
-            dragging: None,
-            drop_target_index: None,
         }
     }
 
@@ -81,60 +75,6 @@ impl TabBar {
                 }
             }
         });
-        // Handle drag state and calculate drop target
-        if self.dragging.is_some() {
-            if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
-                // Find which tab the pointer is over
-                let mut new_drop_index = None;
-                for (index, (_id, rect)) in tab_rects.iter().enumerate() {
-                    if pointer_pos.y >= rect.min.y && pointer_pos.y <= rect.max.y {
-                        let mid_x = rect.center().x;
-                        if pointer_pos.x < mid_x {
-                            new_drop_index = Some(index);
-                            break;
-                        } else if pointer_pos.x >= mid_x {
-                            new_drop_index = Some(index + 1);
-                        }
-                    }
-                }
-                self.drop_target_index = new_drop_index;
-            }
-            // Draw drop indicator
-            if let Some(drop_index) = self.drop_target_index {
-                let indicator_x = if drop_index < tab_rects.len() {
-                    tab_rects[drop_index].1.min.x - TAB_SPACING / 2.0
-                } else if !tab_rects.is_empty() {
-                    tab_rects.last().unwrap().1.max.x + TAB_SPACING / 2.0
-                } else {
-                    0.0
-                };
-                if !tab_rects.is_empty() {
-                    let indicator_rect = egui::Rect::from_min_size(
-                        egui::pos2(indicator_x - DROP_INDICATOR_WIDTH / 2.0, tab_rects[0].1.min.y),
-                        Vec2::new(DROP_INDICATOR_WIDTH, TAB_HEIGHT),
-                    );
-                    ui.painter().rect_filled(
-                        indicator_rect,
-                        2,
-                        ui.visuals().selection.bg_fill,
-                    );
-                }
-            }
-            // Check if drag ended
-            if !ui.ctx().input(|i| i.pointer.any_down()) {
-                if let (Some(dragged_id), Some(target_index)) = (self.dragging, self.drop_target_index) {
-                    // Find the current index of the dragged tab
-                    if let Some(current_index) = tab_rects.iter().position(|(id, _)| *id == dragged_id) {
-                        // Only reorder if actually moving to a different position
-                        if target_index != current_index && target_index != current_index + 1 {
-                            action = TabAction::Reorder { dragged_id, target_index };
-                        }
-                    }
-                }
-                self.dragging = None;
-                self.drop_target_index = None;
-            }
-        }
         action
     }
 
@@ -157,11 +97,7 @@ impl TabBar {
             ConnectionState::Error(_) => Color32::from_rgb(244, 67, 54),
         };
         let is_dark_mode = ui.visuals().dark_mode;
-        let is_being_dragged = self.dragging == Some(id);
-        let bg_color = if is_being_dragged {
-            // Dragged tab: more transparent
-            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 40)
-        } else if is_active {
+        let bg_color = if is_active {
             // Active tab: solid accent color, brightened/darkened based on theme
             if is_dark_mode {
                 brighten_color(accent, ACTIVE_BRIGHTEN_AMOUNT)
@@ -190,12 +126,8 @@ impl TabBar {
             .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH);
         let (rect, response) = ui.allocate_exact_size(
             Vec2::new(desired_width, TAB_HEIGHT),
-            egui::Sense::click_and_drag(),
+            egui::Sense::click(),
         );
-        // Handle drag start
-        if response.drag_started() {
-            self.dragging = Some(id);
-        }
         if response.clicked() {
             action = TabAction::Select(id);
         }
@@ -203,9 +135,8 @@ impl TabBar {
         if response.secondary_clicked() {
             action = TabAction::Select(id);
         }
-        // Context menu on right-click (only if not dragging)
-        if self.dragging.is_none() {
-            response.context_menu(|ui| {
+        // Context menu on right-click
+        response.context_menu(|ui| {
                 if ui.button("Reconnect").clicked() {
                     action = TabAction::Reconnect(id);
                     ui.close();
@@ -220,7 +151,6 @@ impl TabBar {
                     ui.close();
                 }
             });
-        }
         let painter = ui.painter();
         // Round only top corners for proper tab appearance
         painter.rect_filled(rect, egui::CornerRadius {

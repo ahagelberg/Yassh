@@ -235,22 +235,6 @@ impl YasshApp {
             SessionManagerAction::DeleteFolder(id) => {
                 self.confirm_delete_folder = Some(id);
             }
-            SessionManagerAction::MoveSession { session_id, folder_id } => {
-                self.persistence.move_session_to_folder(session_id, folder_id);
-                let _ = self.persistence.save();
-            }
-            SessionManagerAction::MoveSessionRelative { session_id, target_id, before } => {
-                self.persistence.move_session_relative(session_id, target_id, before);
-                let _ = self.persistence.save();
-            }
-            SessionManagerAction::ReorderSession { session_id, target_id, before } => {
-                self.persistence.reorder_session(session_id, target_id, before);
-                let _ = self.persistence.save();
-            }
-            SessionManagerAction::MoveFolder { folder_id, parent_id } => {
-                self.persistence.move_folder_to_parent(folder_id, parent_id);
-                let _ = self.persistence.save();
-            }
         }
     }
 
@@ -317,9 +301,6 @@ impl YasshApp {
                     // Edit the connection's runtime settings, not the stored session
                     self.config_dialog.open_edit_connection(id, session.config.clone());
                 }
-            }
-            TabAction::Reorder { dragged_id, target_index } => {
-                self.session_manager.reorder_session(dragged_id, target_index);
             }
             TabAction::None => {}
         }
