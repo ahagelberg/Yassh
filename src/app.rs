@@ -795,8 +795,10 @@ impl YasshApp {
             return;
         }
         let has_active_session = self.session_manager.active_session().is_some();
-        // Collect and consume key events to prevent egui from handling them
-        // This ensures Ctrl+C, Alt+key, etc. are forwarded to the terminal
+        // Collect text and key events to forward to terminal
+        // Use Text events for character input (respects keyboard layout)
+        // Use Key events for special keys (arrows, function keys, etc.)
+        let mut text_events: Vec<String> = Vec::new();
         let mut key_events: Vec<(egui::Key, egui::Modifiers)> = Vec::new();
         let mut send_ctrl_c = false;
         let mut send_ctrl_x = false;
@@ -828,8 +830,21 @@ impl YasshApp {
                         }
                         true
                     }
+                    egui::Event::Text(text) => {
+                        // Text events respect keyboard layout - use these for character input
+                        if has_active_session {
+                            text_events.push(text.clone());
+                            return false; // Consume the event
+                        }
+                        true
+                    }
                     egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                        key_events.push((*key, *modifiers));
+                        // Collect all keys with Ctrl modifier (Ctrl+character combinations)
+                        // Also collect special keys (non-character keys)
+                        // Character keys without Ctrl will come through Text events
+                        if modifiers.ctrl || !self.is_character_key(*key) {
+                            key_events.push((*key, *modifiers));
+                        }
                         // Only consume events when there's an active terminal session
                         !has_active_session
                     }
@@ -837,6 +852,24 @@ impl YasshApp {
                 }
             });
         });
+        // Handle text input (respects keyboard layout)
+        for text in text_events {
+            if let Some(session) = self.session_manager.active_session() {
+                let should_scroll = session.renderer.is_at_bottom(session.emulator.buffer()) 
+                    || session.config.reset_scroll_on_input;
+                // Convert text to bytes using UTF-8 encoding
+                session.send(text.as_bytes());
+                let session_id = session.id;
+                if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
+                    sel_mgr.clear();
+                }
+                if should_scroll {
+                    if let Some(session) = self.session_manager.active_session_mut() {
+                        session.renderer.scroll_to_bottom(session.emulator.buffer());
+                    }
+                }
+            }
+        }
         // Handle Ctrl+C and Ctrl+X (intercepted from Copy/Cut events)
         if send_ctrl_c {
             if let Some(session) = self.session_manager.active_session() {
@@ -913,6 +946,23 @@ impl YasshApp {
                 }
             }
         }
+    }
+
+    fn is_character_key(&self, key: egui::Key) -> bool {
+        // Check if a key produces character output (should use Text events instead)
+        matches!(key,
+            egui::Key::A | egui::Key::B | egui::Key::C | egui::Key::D | egui::Key::E | egui::Key::F |
+            egui::Key::G | egui::Key::H | egui::Key::I | egui::Key::J | egui::Key::K | egui::Key::L |
+            egui::Key::M | egui::Key::N | egui::Key::O | egui::Key::P | egui::Key::Q | egui::Key::R |
+            egui::Key::S | egui::Key::T | egui::Key::U | egui::Key::V | egui::Key::W | egui::Key::X |
+            egui::Key::Y | egui::Key::Z |
+            egui::Key::Num0 | egui::Key::Num1 | egui::Key::Num2 | egui::Key::Num3 | egui::Key::Num4 |
+            egui::Key::Num5 | egui::Key::Num6 | egui::Key::Num7 | egui::Key::Num8 | egui::Key::Num9 |
+            egui::Key::Space | egui::Key::Minus | egui::Key::Plus | egui::Key::Equals |
+            egui::Key::OpenBracket | egui::Key::CloseBracket | egui::Key::Backslash |
+            egui::Key::Semicolon | egui::Key::Quote | egui::Key::Comma | egui::Key::Period |
+            egui::Key::Slash | egui::Key::Backtick
+        )
     }
 }
 
