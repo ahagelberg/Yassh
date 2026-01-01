@@ -93,6 +93,7 @@ impl TerminalRenderer {
         selection: Option<&Selection>,
         background: Color32,
         focused: bool,
+        invert_colors: bool,
     ) -> Response {
         let buffer = emulator.buffer();
         let desired_size = self.calculate_size(buffer.cols(), buffer.rows());
@@ -119,12 +120,13 @@ impl TerminalRenderer {
                 rect.min,
                 selection,
                 emulator.reverse_video(),
+                invert_colors,
             );
         }
         if focused && emulator.cursor_visible() {
             self.update_cursor_blink(ui.ctx().input(|i| i.time));
             if self.cursor_visible {
-                self.render_cursor(&painter, buffer, rect.min, emulator.reverse_video());
+                self.render_cursor(&painter, buffer, rect.min, emulator.reverse_video(), invert_colors);
             }
             // Request repaint for cursor blink - use after() to avoid continuous repainting
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(CURSOR_BLINK_INTERVAL_MS));
@@ -141,6 +143,7 @@ impl TerminalRenderer {
         origin: Pos2,
         selection: Option<&Selection>,
         reverse_video: bool,
+        invert_colors: bool,
     ) {
         let Some(line) = buffer.get_line(line_idx) else {
             return;
@@ -165,6 +168,9 @@ impl TerminalRenderer {
                 std::mem::swap(&mut fg, &mut bg);
             }
             if is_selected {
+                std::mem::swap(&mut fg, &mut bg);
+            }
+            if invert_colors {
                 std::mem::swap(&mut fg, &mut bg);
             }
             if bg != Color32::TRANSPARENT && bg != buffer.default_bg() {
@@ -203,6 +209,7 @@ impl TerminalRenderer {
         buffer: &TerminalBuffer,
         origin: Pos2,
         reverse_video: bool,
+        invert_colors: bool,
     ) {
         if self.cursor_type == CursorType::None {
             return;
@@ -221,6 +228,16 @@ impl TerminalRenderer {
         } else {
             buffer.default_fg()
         };
+        let cursor_color = if invert_colors {
+            // Invert cursor color
+            if cursor_color == buffer.default_fg() {
+                buffer.default_bg()
+            } else {
+                buffer.default_fg()
+            }
+        } else {
+            cursor_color
+        };
         match self.cursor_type {
             CursorType::Block => {
                 let cursor_rect = Rect::from_min_size(
@@ -231,11 +248,19 @@ impl TerminalRenderer {
                 if let Some(line) = buffer.screen().get(cursor.row) {
                     if let Some(cell) = line.get(cursor.col) {
                         if cell.ch != ' ' {
-                            let text_color = if reverse_video {
+                            let mut text_color = if reverse_video {
                                 buffer.default_fg()
                             } else {
                                 buffer.default_bg()
                             };
+                            if invert_colors {
+                                // Invert text color
+                                text_color = if text_color == buffer.default_fg() {
+                                    buffer.default_bg()
+                                } else {
+                                    buffer.default_fg()
+                                };
+                            }
                             let font_id = FontId::new(self.font_size, FontFamily::Monospace);
                             painter.text(
                                 Pos2::new(x, y),
@@ -344,6 +369,74 @@ impl TerminalRenderer {
     #[allow(dead_code)]
     pub fn cell_height(&self) -> f32 {
         self.cell_height
+    }
+
+    pub fn render_line_inverted(
+        &self,
+        painter: &egui::Painter,
+        buffer: &TerminalBuffer,
+        line_idx: usize,
+        screen_row: usize,
+        origin: Pos2,
+        selection: Option<&Selection>,
+        reverse_video: bool,
+    ) {
+        let Some(line) = buffer.get_line(line_idx) else {
+            return;
+        };
+        // Use floor to snap to pixel boundaries and avoid sub-pixel gaps
+        let y = (origin.y + screen_row as f32 * self.cell_height).floor();
+        let _scrollback_offset = buffer.scrollback_len();
+        for (col, cell) in line.cells().iter().enumerate() {
+            let x = (origin.x + col as f32 * self.cell_width).floor();
+            // Calculate next cell position to ensure no gaps
+            let next_x = (origin.x + (col + 1) as f32 * self.cell_width).floor();
+            let next_y = (origin.y + (screen_row + 1) as f32 * self.cell_height).floor();
+            let cell_rect = Rect::from_min_max(
+                Pos2::new(x, y),
+                Pos2::new(next_x, next_y),
+            );
+            let is_selected = selection.map_or(false, |sel| {
+                sel.contains(line_idx, col)
+            });
+            let (mut fg, mut bg) = cell.style.effective_colors(buffer.default_bg());
+            if reverse_video {
+                std::mem::swap(&mut fg, &mut bg);
+            }
+            if is_selected {
+                std::mem::swap(&mut fg, &mut bg);
+            }
+            // Invert colors for bell blink
+            std::mem::swap(&mut fg, &mut bg);
+
+            if bg != Color32::TRANSPARENT && bg != buffer.default_bg() {
+                painter.rect_filled(cell_rect, 0.0, bg);
+            }
+            if cell.ch != ' ' {
+                let font_id = FontId::new(self.font_size, FontFamily::Monospace);
+                painter.text(
+                    cell_rect.min,
+                    egui::Align2::LEFT_TOP,
+                    cell.ch,
+                    font_id,
+                    fg,
+                );
+            }
+            if cell.style.underline {
+                let underline_y = (next_y - UNDERLINE_OFFSET_PIXELS).floor();
+                painter.line_segment(
+                    [Pos2::new(x, underline_y), Pos2::new(next_x, underline_y)],
+                    egui::Stroke::new(UNDERLINE_STROKE_WIDTH, fg),
+                );
+            }
+            if cell.style.strikethrough {
+                let strikethrough_y = (y + next_y) / 2.0;
+                painter.line_segment(
+                    [Pos2::new(x, strikethrough_y), Pos2::new(next_x, strikethrough_y)],
+                    egui::Stroke::new(STRIKETHROUGH_STROKE_WIDTH, fg),
+                );
+            }
+        }
     }
 
     /// Renders a scrollbar and returns true if scroll position was changed via drag

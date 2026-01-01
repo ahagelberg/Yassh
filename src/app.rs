@@ -12,6 +12,12 @@ use crate::tabs::{TabAction, TabBar};
 use arboard::Clipboard;
 use egui::{CentralPanel, Color32, Context, TopBottomPanel, FontDefinitions, FontData, FontFamily};
 use uuid::Uuid;
+
+// Global flag to indicate when Tab interception should be active
+static TAB_INTERCEPTION_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// Global queue for intercepted Tab events
+static INTERCEPTED_TAB_EVENTS: std::sync::Mutex<Vec<(egui::Modifiers, egui::Key)>> = std::sync::Mutex::new(Vec::new());
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
 use std::sync::Arc;
@@ -36,6 +42,43 @@ const CLOSE_X_SIZE_HOVER: f32 = 8.0;
 const MAX_ICON_SIZE: f32 = 6.0;
 const MIN_ICON_SIZE: f32 = 6.0;
 
+// Windows API constants for bell sound
+#[cfg(windows)]
+const MB_ICONASTERISK: u32 = 0x00000040;
+
+// Bell notification constants
+const BELL_BLINK_DURATION_MS: u64 = 100;
+
+// Plugin to intercept Tab key events before egui processes them
+pub struct TabInterceptionPlugin;
+
+impl egui::Plugin for TabInterceptionPlugin {
+    fn debug_name(&self) -> &'static str {
+        "TabInterceptionPlugin"
+    }
+
+    fn input_hook(&mut self, input: &mut egui::RawInput) {
+        // Only intercept Tab events if the flag is set (when there's an active session)
+        if TAB_INTERCEPTION_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+            // Filter out Tab key events from the raw input and store them for the app to process
+            // But don't consume Ctrl+Tab or Ctrl+Shift+Tab as they're used for session switching
+            input.events.retain(|event| {
+                if let egui::Event::Key { key, modifiers, pressed: true, .. } = event {
+                    if *key == egui::Key::Tab && !modifiers.ctrl {
+                        // Store the Tab event for the app to process, but remove it from egui's event stream
+                        // Only for plain Tab and Shift+Tab, not Ctrl+Tab combinations
+                        if let Ok(mut queue) = INTERCEPTED_TAB_EVENTS.lock() {
+                            queue.push((*modifiers, *key));
+                        }
+                        return false; // Remove from egui's event stream to prevent focus navigation
+                    }
+                }
+                true
+            });
+        }
+    }
+}
+
 pub struct YasshApp {
     app_config: AppConfig,
     persistence: PersistenceManager,
@@ -57,6 +100,7 @@ pub struct YasshApp {
     frame_count: u64,
     last_sidebar_width: f32,
     current_font: String,
+    bell_blink_timer: Option<(std::time::Instant, BellNotification)>,
 }
 
 
@@ -131,6 +175,10 @@ impl YasshApp {
         // Load default font
         let default_font = String::from("Consolas");
         setup_terminal_font(&cc.egui_ctx, &default_font);
+
+        // Register Tab interception plugin
+        cc.egui_ctx.add_plugin(TabInterceptionPlugin);
+
         let mut app = Self {
             app_config,
             persistence,
@@ -152,6 +200,7 @@ impl YasshApp {
             frame_count: 0,
             last_sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             current_font: default_font,
+            bell_blink_timer: None,
         };
         // Restore open sessions
         if let Ok(open_ids) = load_open_sessions() {
@@ -360,13 +409,18 @@ impl YasshApp {
             BellNotification::Sound => {
                 #[cfg(windows)]
                 {
-                    use std::process::Command;
-                    let _ = Command::new("powershell")
-                        .args(["-c", "[console]::beep(800,200)"])
-                        .spawn();
+                    #[link(name = "user32")]
+                    extern "system" {
+                        fn MessageBeep(uType: u32) -> i32;
+                    }
+                    // Use Windows standard notification sound
+                    unsafe { MessageBeep(MB_ICONASTERISK) };
                 }
             }
-            BellNotification::BlinkScreen | BellNotification::BlinkLine => {}
+            BellNotification::BlinkScreen | BellNotification::BlinkLine => {
+                // Start a blink timer for visual feedback
+                self.bell_blink_timer = Some((std::time::Instant::now(), notification));
+            }
             BellNotification::None => {}
         }
     }
@@ -799,6 +853,9 @@ impl YasshApp {
         let mut send_ctrl_c = false;
         let mut send_ctrl_x = false;
         ctx.input_mut(|i| {
+            // Note: Tab events are now intercepted early in update() before UI processing
+            // No need to filter them here again
+            // THEN: Process remaining events
             i.events.retain(|event| {
                 match event {
                     // Intercept Copy/Cut/Paste events - these are Ctrl+C/X/V on Windows
@@ -835,13 +892,18 @@ impl YasshApp {
                         true
                     }
                     egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                        // Tab is already filtered out above when there's an active session
                         // Collect all keys with Ctrl modifier (Ctrl+character combinations)
                         // Also collect special keys (non-character keys)
                         // Character keys without Ctrl will come through Text events
                         if modifiers.ctrl || !self.is_character_key(*key) {
-                            key_events.push((*key, *modifiers));
+                            if has_active_session {
+                                key_events.push((*key, *modifiers));
+                                // Consume the event so egui doesn't process it for UI navigation
+                                return false;
+                            }
                         }
-                        // Only consume events when there's an active terminal session
+                        // Let egui handle keys when there's no active session, or character keys without modifiers
                         !has_active_session
                     }
                     _ => true // Keep other events
@@ -964,6 +1026,36 @@ impl YasshApp {
 
 impl eframe::App for YasshApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Update Tab interception flag based on active session state
+        let has_active_session = self.session_manager.active_session().is_some();
+        TAB_INTERCEPTION_ACTIVE.store(has_active_session, std::sync::atomic::Ordering::Relaxed);
+
+        // Process any Tab events that were intercepted by the plugin
+        if let Ok(mut queue) = INTERCEPTED_TAB_EVENTS.lock() {
+            for (modifiers, key) in queue.drain(..) {
+                if let Some(session) = self.session_manager.active_session() {
+                    let backspace_seq = session.backspace_sequence().to_vec();
+                    if let InputResult::Forward(data) = self.input_handler.handle_key(key, modifiers, &backspace_seq) {
+                        let should_scroll = session.renderer.is_at_bottom(session.emulator.buffer())
+                            || session.config.reset_scroll_on_input;
+                        session.send(&data);
+                        let session_id = session.id;
+                        if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
+                            sel_mgr.clear();
+                        }
+                        if should_scroll {
+                            if let Some(session) = self.session_manager.active_session_mut() {
+                                session.renderer.scroll_to_bottom(session.emulator.buffer());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Process keyboard input FIRST before any UI to prevent egui from consuming events
+        // This MUST be called before ANY UI widgets are shown
+        self.process_keyboard_input(ctx);
         // Draw window border
         egui::Area::new(egui::Id::new("window_border"))
             .order(egui::Order::Foreground)
@@ -982,8 +1074,6 @@ impl eframe::App for YasshApp {
                     egui::StrokeKind::Inside,
                 );
             });
-        // Process keyboard input FIRST before any UI to prevent egui from consuming events
-        self.process_keyboard_input(ctx);
         // Apply theme only once on first frame
         if !self.theme_applied {
             Self::apply_theme(ctx, self.app_config.theme);
@@ -1134,6 +1224,15 @@ impl eframe::App for YasshApp {
                 let sel_mgr = self.selection_managers
                     .entry(session_id)
                     .or_insert_with(SelectionManager::new);
+                // Determine if we should invert colors for bell feedback
+                let invert_colors = if let Some((start_time, bell_type)) = &self.bell_blink_timer {
+                    let elapsed = start_time.elapsed();
+                    let blink_duration = std::time::Duration::from_millis(BELL_BLINK_DURATION_MS);
+                    elapsed < blink_duration && matches!(bell_type, BellNotification::BlinkScreen)
+                } else {
+                    false
+                };
+
                 // Render terminal
                 let response = session.renderer.render(
                     ui,
@@ -1141,10 +1240,56 @@ impl eframe::App for YasshApp {
                     sel_mgr.selection(),
                     bg_color,
                     !dialogs_visible,
+                    invert_colors,
                 );
                 // Render scrollbar
                 session.renderer.render_scrollbar(ui, session.emulator.buffer(), response.rect);
-                // Request focus for terminal area when dialog is not visible
+
+                // Handle bell visual feedback
+                if let Some((start_time, bell_type)) = &self.bell_blink_timer {
+                    let elapsed = start_time.elapsed();
+                    let blink_duration = std::time::Duration::from_millis(BELL_BLINK_DURATION_MS);
+
+                    if elapsed < blink_duration {
+                        match *bell_type {
+                            BellNotification::BlinkScreen => {
+                                // Entire screen is already inverted by the render() call above
+                            }
+                            BellNotification::BlinkLine => {
+                                // Render inverted cursor line on top of normal rendering
+                                let cursor_pos = session.emulator.buffer().cursor();
+                                let line_idx = session.emulator.buffer().scrollback_len() + cursor_pos.row;
+
+                                // Create a temporary painter for just this line
+                                let line_y = response.rect.min.y + cursor_pos.row as f32 * session.renderer.cell_height();
+                                let line_rect = egui::Rect::from_min_size(
+                                    egui::pos2(response.rect.min.x, line_y),
+                                    egui::vec2(response.rect.width(), session.renderer.cell_height()),
+                                );
+
+                                // Render the inverted line on top
+                                let painter = ui.painter_at(line_rect);
+                                session.renderer.render_line_inverted(
+                                    &painter,
+                                    session.emulator.buffer(),
+                                    line_idx,
+                                    0, // screen_row is 0 since we're rendering just this line
+                                    response.rect.min + egui::vec2(0.0, cursor_pos.row as f32 * session.renderer.cell_height()),
+                                    sel_mgr.selection(),
+                                    session.emulator.reverse_video(),
+                                );
+                            }
+                            BellNotification::Sound | BellNotification::None => {
+                                // No visual feedback needed
+                            }
+                        }
+                    } else {
+                        // Blink duration expired, clear the timer
+                        self.bell_blink_timer = None;
+                    }
+                }
+
+                // Request focus for terminal area when clicked
                 if !dialogs_visible && response.clicked() {
                     ui.memory_mut(|m| m.request_focus(self.terminal_focus_id));
                 }
