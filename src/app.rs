@@ -35,12 +35,17 @@ const WINDOW_BORDER_WIDTH: f32 = 1.0;
 const TITLE_BAR_HEIGHT: f32 = 30.0;
 const TITLE_BAR_SIDE_MARGIN: f32 = 12.0;
 const ICON_SIZE: f32 = 20.0;
-const ICON_PADDING: f32 = 8.0;
 const BUTTON_WIDTH: f32 = 48.0;
 const CLOSE_X_SIZE: f32 = 6.0;
 const CLOSE_X_SIZE_HOVER: f32 = 8.0;
 const MAX_ICON_SIZE: f32 = 6.0;
 const MIN_ICON_SIZE: f32 = 6.0;
+
+// Icon drawing constants
+const ICON_STROKE_WIDTH: f32 = 1.5;
+const ICON_LINE_OFFSET: f32 = 3.0;
+const ICON_PROMPT_LINE_RATIO: f32 = 0.6;
+const TITLE_BAR_VERTICAL_PADDING: f32 = 4.0;
 
 // Windows API constants for bell sound
 #[cfg(windows)]
@@ -48,6 +53,19 @@ const MB_ICONASTERISK: u32 = 0x00000040;
 
 // Bell notification constants
 const BELL_BLINK_DURATION_MS: u64 = 100;
+
+// UI element constants
+const CLOSE_BUTTON_HOVER_STROKE_WIDTH: f32 = 1.5;
+const CLOSE_BUTTON_NORMAL_STROKE_WIDTH: f32 = 1.0;
+const WINDOW_ICON_SCALE_FACTOR: f32 = 1.5;
+const WINDOW_ICON_OFFSET_FACTOR: f32 = 0.5;
+
+// Scroll sensitivity
+const SCROLL_PIXELS_PER_LINE: f32 = 20.0;
+
+// Welcome screen spacing
+const WELCOME_SCREEN_TOP_MARGIN: f32 = 100.0;
+const WELCOME_SCREEN_ELEMENT_SPACING: f32 = 20.0;
 
 // Plugin to intercept Tab key events before egui processes them
 pub struct TabInterceptionPlugin;
@@ -455,23 +473,23 @@ impl YasshApp {
                     painter.rect_stroke(
                         icon_rect.rect,
                         0.0,
-                        egui::Stroke::new(1.5, icon_color),
+                        egui::Stroke::new(ICON_STROKE_WIDTH, icon_color),
                         egui::StrokeKind::Outside,
                     );
                     // Draw terminal prompt lines
-                    let line_y1 = icon_center.y - 3.0;
-                    let line_y2 = icon_center.y + 3.0;
-                    let line_x_start = icon_rect.rect.left() + 3.0;
-                    let line_x_end = icon_rect.rect.right() - 3.0;
+                    let line_y1 = icon_center.y - ICON_LINE_OFFSET;
+                    let line_y2 = icon_center.y + ICON_LINE_OFFSET;
+                    let line_x_start = icon_rect.rect.left() + ICON_LINE_OFFSET;
+                    let line_x_end = icon_rect.rect.right() - ICON_LINE_OFFSET;
                     painter.line_segment(
                         [egui::Pos2::new(line_x_start, line_y1), egui::Pos2::new(line_x_end, line_y1)],
-                        egui::Stroke::new(1.0, icon_color),
+                        egui::Stroke::new(CLOSE_BUTTON_NORMAL_STROKE_WIDTH, icon_color),
                     );
                     painter.line_segment(
-                        [egui::Pos2::new(line_x_start, line_y2), egui::Pos2::new(line_x_end * 0.6, line_y2)],
-                        egui::Stroke::new(1.0, icon_color),
+                        [egui::Pos2::new(line_x_start, line_y2), egui::Pos2::new(line_x_end * ICON_PROMPT_LINE_RATIO, line_y2)],
+                        egui::Stroke::new(CLOSE_BUTTON_NORMAL_STROKE_WIDTH, icon_color),
                     );
-                    ui.add_space(ICON_PADDING);
+                    ui.add_space(TITLE_BAR_VERTICAL_PADDING);
                     // Menu bar centered vertically with padding
                     ui.vertical(|ui| {
                         ui.add_space(4.0);
@@ -593,21 +611,21 @@ impl YasshApp {
                             // Draw X on hover
                             ui.painter().line_segment(
                                 [egui::Pos2::new(center.x - CLOSE_X_SIZE_HOVER, center.y - CLOSE_X_SIZE_HOVER), egui::Pos2::new(center.x + CLOSE_X_SIZE_HOVER, center.y + CLOSE_X_SIZE_HOVER)],
-                                egui::Stroke::new(1.5, theme_colors.close_button_hover_text)
+                                egui::Stroke::new(CLOSE_BUTTON_HOVER_STROKE_WIDTH, theme_colors.close_button_hover_text)
                             );
                             ui.painter().line_segment(
                                 [egui::Pos2::new(center.x + CLOSE_X_SIZE_HOVER, center.y - CLOSE_X_SIZE_HOVER), egui::Pos2::new(center.x - CLOSE_X_SIZE_HOVER, center.y + CLOSE_X_SIZE_HOVER)],
-                                egui::Stroke::new(1.5, theme_colors.close_button_hover_text)
+                                egui::Stroke::new(CLOSE_BUTTON_HOVER_STROKE_WIDTH, theme_colors.close_button_hover_text)
                             );
                         } else {
                             // Draw X normally
                             ui.painter().line_segment(
                                 [egui::Pos2::new(center.x - CLOSE_X_SIZE, center.y - CLOSE_X_SIZE), egui::Pos2::new(center.x + CLOSE_X_SIZE, center.y + CLOSE_X_SIZE)],
-                                egui::Stroke::new(1.0, theme_colors.title_bar_text)
+                                egui::Stroke::new(CLOSE_BUTTON_NORMAL_STROKE_WIDTH, theme_colors.title_bar_text)
                             );
                             ui.painter().line_segment(
                                 [egui::Pos2::new(center.x + CLOSE_X_SIZE, center.y - CLOSE_X_SIZE), egui::Pos2::new(center.x - CLOSE_X_SIZE, center.y + CLOSE_X_SIZE)],
-                                egui::Stroke::new(1.0, theme_colors.title_bar_text)
+                                egui::Stroke::new(CLOSE_BUTTON_NORMAL_STROKE_WIDTH, theme_colors.title_bar_text)
                             );
                         }
                         // Maximize/Restore button
@@ -632,23 +650,23 @@ impl YasshApp {
                         if is_maximized {
                             // Restore icon (two overlapping squares)
                             ui.painter().rect_stroke(
-                                egui::Rect::from_center_size(center, egui::Vec2::new(MAX_ICON_SIZE * 1.5, MAX_ICON_SIZE * 1.5)),
+                                egui::Rect::from_center_size(center, egui::Vec2::new(MAX_ICON_SIZE * WINDOW_ICON_SCALE_FACTOR, MAX_ICON_SIZE * WINDOW_ICON_SCALE_FACTOR)),
                                 0.0,
-                                egui::Stroke::new(1.0, icon_color),
+                                egui::Stroke::new(CLOSE_BUTTON_NORMAL_STROKE_WIDTH, icon_color),
                                 egui::StrokeKind::Outside,
                             );
                             ui.painter().rect_stroke(
-                                egui::Rect::from_center_size(center + egui::Vec2::new(MAX_ICON_SIZE * 0.5, MAX_ICON_SIZE * 0.5), egui::Vec2::new(MAX_ICON_SIZE * 1.5, MAX_ICON_SIZE * 1.5)),
+                                egui::Rect::from_center_size(center + egui::Vec2::new(MAX_ICON_SIZE * WINDOW_ICON_OFFSET_FACTOR, MAX_ICON_SIZE * WINDOW_ICON_OFFSET_FACTOR), egui::Vec2::new(MAX_ICON_SIZE * WINDOW_ICON_SCALE_FACTOR, MAX_ICON_SIZE * WINDOW_ICON_SCALE_FACTOR)),
                                 0.0,
-                                egui::Stroke::new(1.0, icon_color),
+                                egui::Stroke::new(CLOSE_BUTTON_NORMAL_STROKE_WIDTH, icon_color),
                                 egui::StrokeKind::Outside,
                             );
                         } else {
                             // Maximize icon (single square)
                             ui.painter().rect_stroke(
-                                egui::Rect::from_center_size(center, egui::Vec2::new(MAX_ICON_SIZE * 1.5, MAX_ICON_SIZE * 1.5)),
+                                egui::Rect::from_center_size(center, egui::Vec2::new(MAX_ICON_SIZE * WINDOW_ICON_SCALE_FACTOR, MAX_ICON_SIZE * WINDOW_ICON_SCALE_FACTOR)),
                                 0.0,
-                                egui::Stroke::new(1.0, icon_color),
+                                egui::Stroke::new(CLOSE_BUTTON_NORMAL_STROKE_WIDTH, icon_color),
                                 egui::StrokeKind::Outside,
                             );
                         }
@@ -1322,7 +1340,7 @@ impl eframe::App for YasshApp {
                 // Handle scroll
                 let scroll_delta = ui.ctx().input(|i| i.smooth_scroll_delta.y);
                 if scroll_delta != 0.0 {
-                    let lines = (scroll_delta.abs() / 20.0).ceil() as usize;
+                    let lines = (scroll_delta.abs() / SCROLL_PIXELS_PER_LINE).ceil() as usize;
                     if scroll_delta > 0.0 {
                         session.renderer.scroll_up(lines);
                     } else {
@@ -1340,11 +1358,11 @@ impl eframe::App for YasshApp {
                 // No active session - show welcome screen
                 ui.centered_and_justified(|ui| {
                     ui.vertical_centered(|ui| {
-                        ui.add_space(100.0);
+                        ui.add_space(WELCOME_SCREEN_TOP_MARGIN);
                         ui.heading("Welcome to Yassh");
-                        ui.add_space(20.0);
+                        ui.add_space(WELCOME_SCREEN_ELEMENT_SPACING);
                         ui.label("Select a session from the sidebar or create a new one");
-                        ui.add_space(20.0);
+                        ui.add_space(WELCOME_SCREEN_ELEMENT_SPACING);
                         if ui.button("➕ New Session").clicked() {
                             self.config_dialog.open_new();
                         }
