@@ -148,6 +148,7 @@ impl ManagedSession {
                 SshEvent::Connected => {
                     self.error_message = None;
                     self.reconnect_attempts = 0;
+                    self.last_viewport_size = None;
                 }
                 SshEvent::Data(data) => {
                     self.emulator.process(&data);
@@ -259,14 +260,20 @@ impl ManagedSession {
         }
     }
 
-    pub fn check_and_handle_resize(&mut self, cols: usize, rows: usize) -> bool {
+    pub fn check_and_handle_resize(&mut self, cols: usize, rows: usize, send_to_server: bool) -> bool {
         let new_size = (cols, rows);
         if self.last_viewport_size == Some(new_size) {
             return false;
         }
-        if let Some(connection) = &self.connection {
-            connection.resize_terminal(cols as u32, rows as u32);
+        if send_to_server {
+            if let Some(connection) = &self.connection {
+                connection.resize_terminal(cols as u32, rows as u32);
+                // Only update last_viewport_size when we actually send to server
+                self.last_viewport_size = Some(new_size);
+            }
         }
+        // Don't update last_viewport_size when not sending to server
+        // This ensures that when drag stops, we can detect the size change and send it
         let buffer = self.emulator.buffer_mut();
         let current_scroll_offset = self.scroll_offset;
         let was_at_bottom = self.was_at_bottom;
@@ -278,7 +285,6 @@ impl ManagedSession {
         } else {
             self.scroll_offset = current_scroll_offset.min(new_max_scroll);
         }
-        self.last_viewport_size = Some(new_size);
         true
     }
 }

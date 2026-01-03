@@ -124,6 +124,8 @@ pub struct YasshApp {
     last_sidebar_width: f32,
     current_font: String,
     bell_blink_timer: Option<(std::time::Instant, BellNotification)>,
+    window_resize_pending: Option<(usize, usize)>,
+    is_window_resizing: bool,
 }
 
 
@@ -214,6 +216,8 @@ impl YasshApp {
             last_sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             current_font: default_font,
             bell_blink_timer: None,
+            window_resize_pending: None,
+            is_window_resizing: false,
         };
         // Restore open sessions
         if let Ok(open_ids) = load_open_sessions() {
@@ -509,8 +513,11 @@ impl YasshApp {
         let handle_width = RESIZE_HANDLE_WIDTH;
         let corner_size = handle_width * 2.0;
         
+        let mut any_drag_started = false;
+        let mut any_drag_stopped = false;
+        
         // Helper to create a resize handle
-        let create_resize_handle = |id: egui::Id, pos: egui::Pos2, size: egui::Vec2, cursor: CursorIcon, on_drag: Box<dyn Fn(egui::Vec2) -> egui::Vec2>| {
+        let create_resize_handle = |id: egui::Id, pos: egui::Pos2, size: egui::Vec2, cursor: CursorIcon, on_drag: Box<dyn Fn(egui::Vec2) -> egui::Vec2>, drag_started: &mut bool, drag_stopped: &mut bool| {
             Area::new(id)
                 .order(Order::Foreground)
                 .fixed_pos(pos)
@@ -520,6 +527,9 @@ impl YasshApp {
                     if response.hovered() {
                         ui.ctx().set_cursor_icon(cursor);
                     }
+                    if response.drag_started() {
+                        *drag_started = true;
+                    }
                     if response.dragged() {
                         let delta = response.drag_delta();
                         let mut new_size = on_drag(delta);
@@ -527,6 +537,9 @@ impl YasshApp {
                         new_size.x = new_size.x.max(MIN_WINDOW_WIDTH);
                         new_size.y = new_size.y.max(MIN_WINDOW_HEIGHT);
                         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(new_size));
+                    }
+                    if response.drag_stopped() {
+                        *drag_stopped = true;
                     }
                 });
         };
@@ -539,6 +552,8 @@ impl YasshApp {
             egui::Vec2::new(corner_size, corner_size),
             CursorIcon::ResizeNorthWest,
             Box::new(|delta| egui::Vec2::new(screen_rect.width() - delta.x, screen_rect.height() - delta.y)),
+            &mut any_drag_started,
+            &mut any_drag_stopped,
         );
         
         // Top-right corner
@@ -548,6 +563,8 @@ impl YasshApp {
             egui::Vec2::new(corner_size, corner_size),
             CursorIcon::ResizeNorthEast,
             Box::new(|delta| egui::Vec2::new(screen_rect.width() + delta.x, screen_rect.height() - delta.y)),
+            &mut any_drag_started,
+            &mut any_drag_stopped,
         );
         
         // Bottom-left corner
@@ -557,6 +574,8 @@ impl YasshApp {
             egui::Vec2::new(corner_size, corner_size),
             CursorIcon::ResizeSouthWest,
             Box::new(|delta| egui::Vec2::new(screen_rect.width() - delta.x, screen_rect.height() + delta.y)),
+            &mut any_drag_started,
+            &mut any_drag_stopped,
         );
         
         // Bottom-right corner
@@ -566,6 +585,8 @@ impl YasshApp {
             egui::Vec2::new(corner_size, corner_size),
             CursorIcon::ResizeSouthEast,
             Box::new(|delta| egui::Vec2::new(screen_rect.width() + delta.x, screen_rect.height() + delta.y)),
+            &mut any_drag_started,
+            &mut any_drag_stopped,
         );
         
         // Edges (positioned to not overlap with corners)
@@ -576,6 +597,8 @@ impl YasshApp {
             egui::Vec2::new(handle_width, screen_rect.height() - corner_size * 2.0),
             CursorIcon::ResizeWest,
             Box::new(|delta| egui::Vec2::new(screen_rect.width() - delta.x, screen_rect.height())),
+            &mut any_drag_started,
+            &mut any_drag_stopped,
         );
         
         // Right edge (excluding corners)
@@ -585,6 +608,8 @@ impl YasshApp {
             egui::Vec2::new(handle_width, screen_rect.height() - corner_size * 2.0),
             CursorIcon::ResizeEast,
             Box::new(|delta| egui::Vec2::new(screen_rect.width() + delta.x, screen_rect.height())),
+            &mut any_drag_started,
+            &mut any_drag_stopped,
         );
         
         // Top edge (excluding corners)
@@ -594,6 +619,8 @@ impl YasshApp {
             egui::Vec2::new(screen_rect.width() - corner_size * 2.0, handle_width),
             CursorIcon::ResizeNorth,
             Box::new(|delta| egui::Vec2::new(screen_rect.width(), screen_rect.height() - delta.y)),
+            &mut any_drag_started,
+            &mut any_drag_stopped,
         );
         
         // Bottom edge (excluding corners)
@@ -603,7 +630,16 @@ impl YasshApp {
             egui::Vec2::new(screen_rect.width() - corner_size * 2.0, handle_width),
             CursorIcon::ResizeSouth,
             Box::new(|delta| egui::Vec2::new(screen_rect.width(), screen_rect.height() + delta.y)),
+            &mut any_drag_started,
+            &mut any_drag_stopped,
         );
+        
+        if any_drag_started {
+            self.is_window_resizing = true;
+        }
+        if any_drag_stopped {
+            self.is_window_resizing = false;
+        }
     }
 
     fn show_window_border(&mut self, ctx: &Context) {
@@ -1459,7 +1495,13 @@ impl eframe::App for YasshApp {
                 let cell_height = session.renderer.cell_height();
                 let viewport_cols = (available.x / cell_width).floor() as usize;
                 let viewport_rows = (available.y / cell_height).floor() as usize;
-                session.check_and_handle_resize(viewport_cols, viewport_rows);
+                let send_to_server = !self.is_window_resizing;
+                session.check_and_handle_resize(viewport_cols, viewport_rows, send_to_server);
+                if !self.is_window_resizing {
+                    self.window_resize_pending = None;
+                } else {
+                    self.window_resize_pending = Some((viewport_cols, viewport_rows));
+                }
                 // Render terminal
                 let current_scroll_offset = session.scroll_offset();
                 let (response, new_scroll_offset, is_at_bottom, _viewport_cols, _viewport_rows) = session.renderer.render(
@@ -1612,6 +1654,14 @@ impl eframe::App for YasshApp {
         });
         // Show resize handles for borderless window
         self.show_resize_handles(ctx);
+        // Send pending resize to server when drag stops
+        if !self.is_window_resizing {
+            if let Some((cols, rows)) = self.window_resize_pending.take() {
+                if let Some(session) = self.session_manager.active_session_mut() {
+                    session.check_and_handle_resize(cols, rows, true);
+                }
+            }
+        }
         // Show window border
         self.show_window_border(ctx);
     }

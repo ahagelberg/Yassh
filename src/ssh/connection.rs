@@ -173,7 +173,7 @@ impl SshConnection {
                     break;
                 }
                 Ok(SshCommand::Resize { cols, rows }) => {
-                    if let Err(e) = Self::handle_resize(config, channel, cols, rows) {
+                    if let Err(e) = Self::handle_resize(config, &session, channel, cols, rows) {
                         debug::log(&format!("[SSH {}] Resize error: {:?}", config.id, e));
                     }
                 }
@@ -246,10 +246,14 @@ impl SshConnection {
         let _ = self.command_tx.send(SshCommand::Resize { cols, rows });
     }
 
-    fn handle_resize(config: &SessionConfig, channel: &mut Channel, cols: u32, rows: u32) -> Result<()> {
+    fn handle_resize(config: &SessionConfig, session: &Session, channel: &mut Channel, cols: u32, rows: u32) -> Result<()> {
         match config.resize_method {
             ResizeMethod::Ssh => {
-                channel.request_pty("xterm-256color", None, Some((cols, rows, 0, 0)))?;
+                // request_pty_size is the correct method to resize an existing PTY
+                // It sends a window-change message to the server
+                session.set_blocking(true);
+                channel.request_pty_size(cols, rows, None, None)?;
+                session.set_blocking(false);
             }
             ResizeMethod::Ansi => {
                 let cmd = format!("\x1b[8;{};{}t", rows, cols);
