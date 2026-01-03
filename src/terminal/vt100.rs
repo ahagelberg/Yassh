@@ -162,21 +162,7 @@ impl Vt100Mode {
             'P' => buffer.delete_chars(param(0, 1) as usize),
             'S' => buffer.scroll_up(param(0, 1) as usize),
             'T' => buffer.scroll_down(param(0, 1) as usize),
-            'X' => {
-                let count = param(0, 1) as usize;
-                let cursor = buffer.cursor();
-                let _style = buffer.current_style();
-                for i in 0..count {
-                    let col = cursor.col + i;
-                    if col < buffer.cols() {
-                        if let Some(line) = buffer.screen().get(cursor.row) {
-                            let _ = line; // We need mutable access
-                        }
-                    }
-                }
-                // Erase characters by clearing the range
-                buffer.erase_in_line(0);
-            }
+            'X' => buffer.erase_chars(param(0, 1) as usize),
             'd' => {
                 let cursor = buffer.cursor();
                 buffer.set_cursor_position((param(0, 1) as usize).saturating_sub(1), cursor.col);

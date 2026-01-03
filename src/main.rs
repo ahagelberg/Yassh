@@ -85,6 +85,7 @@ fn main() -> eframe::Result<()> {
             .with_inner_size([1200.0, 800.0])
             .with_min_inner_size([800.0, 600.0])
             .with_title("Yassh - SSH Terminal")
+            .with_resizable(true)
             .with_decorations(false),
         persist_window: false,
         ..Default::default()

@@ -29,7 +29,6 @@ use font_kit::family_name::FamilyName;
 const MIN_SIDEBAR_WIDTH: f32 = 170.0;
 const MAX_SIDEBAR_WIDTH: f32 = 400.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 130.0;
-const WINDOW_BORDER_WIDTH: f32 = 1.0;
 
 // Title bar constants
 const TITLE_BAR_HEIGHT: f32 = 30.0;
@@ -60,12 +59,19 @@ const CLOSE_BUTTON_NORMAL_STROKE_WIDTH: f32 = 1.0;
 const WINDOW_ICON_SCALE_FACTOR: f32 = 1.5;
 const WINDOW_ICON_OFFSET_FACTOR: f32 = 0.5;
 
-// Scroll sensitivity
-const SCROLL_PIXELS_PER_LINE: f32 = 20.0;
 
 // Welcome screen spacing
 const WELCOME_SCREEN_TOP_MARGIN: f32 = 100.0;
 const WELCOME_SCREEN_ELEMENT_SPACING: f32 = 20.0;
+
+// Resize handle width for borderless window
+const RESIZE_HANDLE_WIDTH: f32 = 4.0;
+// Minimum window size to prevent crashes
+const MIN_WINDOW_WIDTH: f32 = 300.0;
+const MIN_WINDOW_HEIGHT: f32 = 200.0;
+// Window border width and color
+const WINDOW_BORDER_WIDTH: f32 = 1.0;
+const WINDOW_BORDER_COLOR: Color32 = Color32::from_rgb(100, 100, 100);
 
 // Plugin to intercept Tab key events before egui processes them
 pub struct TabInterceptionPlugin;
@@ -506,6 +512,160 @@ impl YasshApp {
             }
             BellNotification::None => {}
         }
+    }
+
+    fn show_resize_handles(&mut self, ctx: &Context) {
+        use egui::{Area, Order, Sense, CursorIcon};
+        let screen_rect = ctx.viewport_rect();
+        let handle_width = RESIZE_HANDLE_WIDTH;
+        let corner_size = handle_width * 2.0;
+        
+        // Helper to create a resize handle
+        let create_resize_handle = |id: egui::Id, pos: egui::Pos2, size: egui::Vec2, cursor: CursorIcon, on_drag: Box<dyn Fn(egui::Vec2) -> egui::Vec2>| {
+            Area::new(id)
+                .order(Order::Foreground)
+                .fixed_pos(pos)
+                .constrain(true)
+                .show(ctx, |ui| {
+                    let response = ui.allocate_response(size, Sense::drag());
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(cursor);
+                    }
+                    if response.dragged() {
+                        let delta = response.drag_delta();
+                        let mut new_size = on_drag(delta);
+                        // Clamp to minimum window size
+                        new_size.x = new_size.x.max(MIN_WINDOW_WIDTH);
+                        new_size.y = new_size.y.max(MIN_WINDOW_HEIGHT);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(new_size));
+                    }
+                });
+        };
+        
+        // Corners first (so they take priority over edges)
+        // Top-left corner
+        create_resize_handle(
+            egui::Id::new("resize_top_left"),
+            egui::Pos2::new(screen_rect.min.x, screen_rect.min.y),
+            egui::Vec2::new(corner_size, corner_size),
+            CursorIcon::ResizeNorthWest,
+            Box::new(|delta| egui::Vec2::new(screen_rect.width() - delta.x, screen_rect.height() - delta.y)),
+        );
+        
+        // Top-right corner
+        create_resize_handle(
+            egui::Id::new("resize_top_right"),
+            egui::Pos2::new(screen_rect.max.x - corner_size, screen_rect.min.y),
+            egui::Vec2::new(corner_size, corner_size),
+            CursorIcon::ResizeNorthEast,
+            Box::new(|delta| egui::Vec2::new(screen_rect.width() + delta.x, screen_rect.height() - delta.y)),
+        );
+        
+        // Bottom-left corner
+        create_resize_handle(
+            egui::Id::new("resize_bottom_left"),
+            egui::Pos2::new(screen_rect.min.x, screen_rect.max.y - corner_size),
+            egui::Vec2::new(corner_size, corner_size),
+            CursorIcon::ResizeSouthWest,
+            Box::new(|delta| egui::Vec2::new(screen_rect.width() - delta.x, screen_rect.height() + delta.y)),
+        );
+        
+        // Bottom-right corner
+        create_resize_handle(
+            egui::Id::new("resize_bottom_right"),
+            egui::Pos2::new(screen_rect.max.x - corner_size, screen_rect.max.y - corner_size),
+            egui::Vec2::new(corner_size, corner_size),
+            CursorIcon::ResizeSouthEast,
+            Box::new(|delta| egui::Vec2::new(screen_rect.width() + delta.x, screen_rect.height() + delta.y)),
+        );
+        
+        // Edges (positioned to not overlap with corners)
+        // Left edge (excluding corners)
+        create_resize_handle(
+            egui::Id::new("resize_left"),
+            egui::Pos2::new(screen_rect.min.x, screen_rect.min.y + corner_size),
+            egui::Vec2::new(handle_width, screen_rect.height() - corner_size * 2.0),
+            CursorIcon::ResizeWest,
+            Box::new(|delta| egui::Vec2::new(screen_rect.width() - delta.x, screen_rect.height())),
+        );
+        
+        // Right edge (excluding corners)
+        create_resize_handle(
+            egui::Id::new("resize_right"),
+            egui::Pos2::new(screen_rect.max.x - handle_width, screen_rect.min.y + corner_size),
+            egui::Vec2::new(handle_width, screen_rect.height() - corner_size * 2.0),
+            CursorIcon::ResizeEast,
+            Box::new(|delta| egui::Vec2::new(screen_rect.width() + delta.x, screen_rect.height())),
+        );
+        
+        // Top edge (excluding corners)
+        create_resize_handle(
+            egui::Id::new("resize_top"),
+            egui::Pos2::new(screen_rect.min.x + corner_size, screen_rect.min.y),
+            egui::Vec2::new(screen_rect.width() - corner_size * 2.0, handle_width),
+            CursorIcon::ResizeNorth,
+            Box::new(|delta| egui::Vec2::new(screen_rect.width(), screen_rect.height() - delta.y)),
+        );
+        
+        // Bottom edge (excluding corners)
+        create_resize_handle(
+            egui::Id::new("resize_bottom"),
+            egui::Pos2::new(screen_rect.min.x + corner_size, screen_rect.max.y - handle_width),
+            egui::Vec2::new(screen_rect.width() - corner_size * 2.0, handle_width),
+            CursorIcon::ResizeSouth,
+            Box::new(|delta| egui::Vec2::new(screen_rect.width(), screen_rect.height() + delta.y)),
+        );
+    }
+
+    fn show_window_border(&mut self, ctx: &Context) {
+        use egui::Area;
+        let screen_rect = ctx.viewport_rect();
+        let border_width = WINDOW_BORDER_WIDTH;
+        
+        // Draw border around the entire window
+        Area::new(egui::Id::new("window_border"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen_rect.min)
+            .constrain(true)
+            .show(ctx, |ui| {
+                let painter = ui.painter();
+                // Top border
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        screen_rect.min,
+                        egui::Vec2::new(screen_rect.width(), border_width)
+                    ),
+                    0.0,
+                    WINDOW_BORDER_COLOR,
+                );
+                // Bottom border
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::Pos2::new(screen_rect.min.x, screen_rect.max.y - border_width),
+                        egui::Vec2::new(screen_rect.width(), border_width)
+                    ),
+                    0.0,
+                    WINDOW_BORDER_COLOR,
+                );
+                // Left border
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        screen_rect.min,
+                        egui::Vec2::new(border_width, screen_rect.height())
+                    ),
+                    0.0,
+                    WINDOW_BORDER_COLOR,
+                );
+                // Right border
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::Pos2::new(screen_rect.max.x - border_width, screen_rect.min.y),
+                        egui::Vec2::new(border_width, screen_rect.height())
+                    ),
+                    0.0,
+                    WINDOW_BORDER_COLOR,
+                );
+            });
     }
 
     fn show_menu_bar(&mut self, ctx: &Context) {
@@ -1041,51 +1201,30 @@ impl YasshApp {
         // Handle text input (respects keyboard layout)
         for text in text_events {
             if let Some(session) = self.session_manager.active_session() {
-                let should_scroll = session.renderer.is_at_bottom(session.emulator.buffer()) 
-                    || session.config.reset_scroll_on_input;
                 // Convert text to bytes using UTF-8 encoding
                 session.send(text.as_bytes());
                 let session_id = session.id;
                 if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
                     sel_mgr.clear();
                 }
-                if should_scroll {
-                    if let Some(session) = self.session_manager.active_session_mut() {
-                        session.renderer.scroll_to_bottom(session.emulator.buffer());
-                    }
-                }
             }
         }
         // Handle Ctrl+C and Ctrl+X (intercepted from Copy/Cut events)
         if send_ctrl_c {
             if let Some(session) = self.session_manager.active_session() {
-                let should_scroll = session.renderer.is_at_bottom(session.emulator.buffer()) 
-                    || session.config.reset_scroll_on_input;
                 session.send(&[0x03]); // Ctrl+C = ETX (End of Text)
                 let session_id = session.id;
                 if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
                     sel_mgr.clear();
                 }
-                if should_scroll {
-                    if let Some(session) = self.session_manager.active_session_mut() {
-                        session.renderer.scroll_to_bottom(session.emulator.buffer());
-                    }
-                }
             }
         }
         if send_ctrl_x {
             if let Some(session) = self.session_manager.active_session() {
-                let should_scroll = session.renderer.is_at_bottom(session.emulator.buffer()) 
-                    || session.config.reset_scroll_on_input;
                 session.send(&[0x18]); // Ctrl+X = CAN (Cancel)
                 let session_id = session.id;
                 if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
                     sel_mgr.clear();
-                }
-                if should_scroll {
-                    if let Some(session) = self.session_manager.active_session_mut() {
-                        session.renderer.scroll_to_bottom(session.emulator.buffer());
-                    }
                 }
             }
         }
@@ -1095,19 +1234,10 @@ impl YasshApp {
             if let Some(session) = self.session_manager.active_session() {
                 let backspace_seq = session.backspace_sequence().to_vec();
                 if let InputResult::Forward(data) = self.input_handler.handle_key(key, modifiers, &backspace_seq) {
-                    // Check scroll settings before sending
-                    let should_scroll = session.renderer.is_at_bottom(session.emulator.buffer()) 
-                        || session.config.reset_scroll_on_input;
                     session.send(&data);
                     let session_id = session.id;
                     if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
                         sel_mgr.clear();
-                    }
-                    // Scroll to bottom if needed
-                    if should_scroll {
-                        if let Some(session) = self.session_manager.active_session_mut() {
-                            session.renderer.scroll_to_bottom(session.emulator.buffer());
-                        }
                     }
                 }
             }
@@ -1157,17 +1287,10 @@ impl eframe::App for YasshApp {
                 if let Some(session) = self.session_manager.active_session() {
                     let backspace_seq = session.backspace_sequence().to_vec();
                     if let InputResult::Forward(data) = self.input_handler.handle_key(key, modifiers, &backspace_seq) {
-                        let should_scroll = session.renderer.is_at_bottom(session.emulator.buffer())
-                            || session.config.reset_scroll_on_input;
                         session.send(&data);
                         let session_id = session.id;
                         if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
                             sel_mgr.clear();
-                        }
-                        if should_scroll {
-                            if let Some(session) = self.session_manager.active_session_mut() {
-                                session.renderer.scroll_to_bottom(session.emulator.buffer());
-                            }
                         }
                     }
                 }
@@ -1177,24 +1300,6 @@ impl eframe::App for YasshApp {
         // Process keyboard input FIRST before any UI to prevent egui from consuming events
         // This MUST be called before ANY UI widgets are shown
         self.process_keyboard_input(ctx);
-        // Draw window border
-        egui::Area::new(egui::Id::new("window_border"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(0.0, 0.0))
-            .show(ctx, |ui| {
-                let screen_rect = ctx.content_rect();
-                let border_color = if ctx.style().visuals.dark_mode {
-                    Color32::from_rgba_unmultiplied(100, 100, 100, 255)
-                } else {
-                    Color32::from_rgba_unmultiplied(150, 150, 150, 255)
-                };
-                ui.painter().rect_stroke(
-                    screen_rect,
-                    0.0,
-                    egui::Stroke::new(WINDOW_BORDER_WIDTH, border_color),
-                    egui::StrokeKind::Inside,
-                );
-            });
         // Apply theme only once on first frame
         if !self.theme_applied {
             Self::apply_theme(ctx, self.app_config.theme);
@@ -1331,19 +1436,6 @@ impl eframe::App for YasshApp {
                 self.input_handler.set_cursor_keys_application(
                     session.emulator.cursor_keys_application()
                 );
-                // Calculate terminal size based on available space
-                let available = ui.available_size();
-                let (cols, rows) = session.renderer.calculate_grid_size(available);
-                if cols != session.emulator.cols() || rows != session.emulator.rows() {
-                    debug_log(&format!(
-                        "[TERMINAL] Frame {}: resize from {}x{} to {}x{}, available: {:.1}x{:.1}",
-                        self.frame_count,
-                        session.emulator.cols(), session.emulator.rows(),
-                        cols, rows,
-                        available.x, available.y
-                    ));
-                    session.resize(cols, rows);
-                }
                 // Get or create selection manager
                 let sel_mgr = self.selection_managers
                     .entry(session_id)
@@ -1366,9 +1458,6 @@ impl eframe::App for YasshApp {
                     !dialogs_visible,
                     invert_colors,
                 );
-                // Render scrollbar
-                session.renderer.render_scrollbar(ui, session.emulator.buffer(), response.rect);
-
                 // Handle bell visual feedback
                 if let Some((start_time, bell_type)) = &self.bell_blink_timer {
                     let elapsed = start_time.elapsed();
@@ -1439,6 +1528,7 @@ impl eframe::App for YasshApp {
                             pos,
                             response.rect.min,
                             session.emulator.buffer(),
+                            response.rect.height(),
                         ) {
                             sel_mgr.start(line, col);
                         }
@@ -1450,6 +1540,7 @@ impl eframe::App for YasshApp {
                             pos,
                             response.rect.min,
                             session.emulator.buffer(),
+                            response.rect.height(),
                         ) {
                             sel_mgr.update(line, col);
                         }
@@ -1457,16 +1548,6 @@ impl eframe::App for YasshApp {
                 }
                 if response.drag_stopped() {
                     sel_mgr.finish();
-                }
-                // Handle scroll
-                let scroll_delta = ui.ctx().input(|i| i.smooth_scroll_delta.y);
-                if scroll_delta != 0.0 {
-                    let lines = (scroll_delta.abs() / SCROLL_PIXELS_PER_LINE).ceil() as usize;
-                    if scroll_delta > 0.0 {
-                        session.renderer.scroll_up(lines);
-                    } else {
-                        session.renderer.scroll_down(lines, session.emulator.buffer());
-                    }
                 }
                 // Show error message if any
                 if let Some(error) = &session.error_message {
@@ -1513,6 +1594,10 @@ impl eframe::App for YasshApp {
                 }
             }
         });
+        // Show resize handles for borderless window
+        self.show_resize_handles(ctx);
+        // Show window border
+        self.show_window_border(ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

@@ -42,10 +42,6 @@ impl TerminalEmulator {
         }
     }
 
-    pub fn resize(&mut self, cols: usize, rows: usize) {
-        self.buffer.resize(cols, rows);
-    }
-
     pub fn buffer(&self) -> &TerminalBuffer {
         &self.buffer
     }
@@ -87,13 +83,6 @@ impl TerminalEmulator {
         }
     }
 
-    pub fn cols(&self) -> usize {
-        self.buffer.cols()
-    }
-
-    pub fn rows(&self) -> usize {
-        self.buffer.rows()
-    }
 
     pub fn update_config(&mut self, config: &SessionConfig) {
         self.buffer.set_default_colors(config.foreground(), config.background());

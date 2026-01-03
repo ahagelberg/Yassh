@@ -1,9 +1,11 @@
 use egui::Color32;
 use std::collections::VecDeque;
+use std::fs::OpenOptions;
+use std::io::Write;
 
 const DEFAULT_COLS: usize = 80;
 const DEFAULT_ROWS: usize = 24;
-const MIN_SCROLLBACK: usize = 1000;
+const MIN_BUFFER_SIZE: usize = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellStyle {
@@ -116,10 +118,6 @@ impl Line {
         self.cells.is_empty()
     }
 
-    pub fn resize(&mut self, cols: usize, style: CellStyle) {
-        self.cells.resize(cols, Cell { ch: ' ', style });
-    }
-
     pub fn clear(&mut self, style: CellStyle) {
         for cell in &mut self.cells {
             cell.ch = ' ';
@@ -166,15 +164,23 @@ impl Default for CursorPosition {
     }
 }
 
+/// Unified terminal buffer - one continuous buffer where the "screen" is a
+/// fixed-size viewport into the buffer. The server_screen_start tracks where the
+/// server's view begins in the buffer.
 pub struct TerminalBuffer {
-    scrollback: VecDeque<Line>,
-    screen: Vec<Line>,
+    // All lines in one buffer - history + current screen
+    lines: VecDeque<Line>,
     cols: usize,
     rows: usize,
-    max_scrollback: usize,
+    max_lines: usize,
+    // Buffer index where the server's screen starts
+    // The screen occupies lines[server_screen_start..server_screen_start+rows]
+    server_screen_start: usize,
+    // Cursor position relative to the screen (0 = first screen line, rows-1 = last)
     cursor: CursorPosition,
     saved_cursor: CursorPosition,
     current_style: CellStyle,
+    // Scroll region (relative to screen, 0-based)
     scroll_top: usize,
     scroll_bottom: usize,
     origin_mode: bool,
@@ -183,19 +189,31 @@ pub struct TerminalBuffer {
 }
 
 impl TerminalBuffer {
+    fn debug_log(msg: &str) {
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("yassh_debug.log")
+        {
+            let _ = writeln!(file, "{}", msg);
+            let _ = file.flush();
+        }
+    }
+
     pub fn new(max_scrollback: usize, default_fg: Color32, default_bg: Color32) -> Self {
         let rows = DEFAULT_ROWS;
         let cols = DEFAULT_COLS;
-        let max_scrollback = max_scrollback.max(MIN_SCROLLBACK);
+        let max_lines = max_scrollback.max(MIN_BUFFER_SIZE) + rows;
         let mut style = CellStyle::default();
         style.fg = default_fg;
-        let screen = (0..rows).map(|_| Line::with_style(cols, style)).collect();
+        // Start with empty buffer - lines will be added as content is written
+        let lines: VecDeque<Line> = VecDeque::new();
         Self {
-            scrollback: VecDeque::new(),
-            screen,
+            lines,
             cols,
             rows,
-            max_scrollback,
+            max_lines,
+            server_screen_start: 0, // Server's screen starts at the beginning of the buffer
             cursor: CursorPosition::default(),
             saved_cursor: CursorPosition::default(),
             current_style: style,
@@ -207,46 +225,56 @@ impl TerminalBuffer {
         }
     }
 
-    pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
-        if new_cols == self.cols && new_rows == self.rows {
-            return;
-        }
-        for line in &mut self.screen {
-            line.resize(new_cols, self.current_style);
-        }
-        for line in &mut self.scrollback {
-            line.resize(new_cols, self.current_style);
-        }
-        while self.screen.len() < new_rows {
-            self.screen.push(Line::with_style(new_cols, self.current_style));
-        }
-        while self.screen.len() > new_rows {
-            let line = self.screen.remove(0);
-            self.add_to_scrollback(line);
-        }
-        self.cols = new_cols;
-        self.rows = new_rows;
-        self.scroll_bottom = new_rows - 1;
-        self.cursor.row = self.cursor.row.min(new_rows.saturating_sub(1));
-        self.cursor.col = self.cursor.col.min(new_cols.saturating_sub(1));
+    /// Convert server screen-relative row to absolute buffer index
+    fn server_screen_to_buffer(&self, screen_row: usize) -> usize {
+        self.server_screen_start + screen_row
     }
 
-    fn add_to_scrollback(&mut self, line: Line) {
-        self.scrollback.push_back(line);
-        while self.scrollback.len() > self.max_scrollback {
-            self.scrollback.pop_front();
+
+    /// Get the buffer index of the last line in the server's screen
+    /// This is the line that should be at the bottom when "scrolled to bottom"
+    #[allow(dead_code)]
+    pub fn server_screen_end(&self) -> usize {
+        // The server's screen ends at server_screen_start + rows - 1
+        // But if the buffer doesn't have enough lines, use total_lines - 1
+        let theoretical_end = self.server_screen_start + self.rows.saturating_sub(1);
+        theoretical_end.min(self.lines.len().saturating_sub(1))
+    }
+
+    fn trim_buffer(&mut self) {
+        while self.lines.len() > self.max_lines {
+            self.lines.pop_front();
+            // Adjust server_screen_start since we removed a line from the front
+            self.server_screen_start = self.server_screen_start.saturating_sub(1);
+        }
+    }
+
+    /// Ensure buffer has enough lines to access the given index
+    /// Called when server sends data that requires more lines
+    fn ensure_line_exists(&mut self, buffer_idx: usize) {
+        while self.lines.len() <= buffer_idx {
+            self.lines.push_back(Line::with_style(self.cols, self.current_style));
         }
     }
 
     pub fn put_char(&mut self, ch: char) {
+        // Handle line wrap
         if self.cursor.col >= self.cols {
             self.cursor.col = 0;
             self.new_line();
         }
-        if let Some(line) = self.screen.get_mut(self.cursor.row) {
-            line.set(self.cursor.col, Cell::new(ch, self.current_style));
+        // Ensure cursor row is valid
+        self.cursor.row = self.cursor.row.min(self.rows.saturating_sub(1));
+        // Ensure the line exists (server is writing data, so create line if needed)
+        let idx = self.server_screen_to_buffer(self.cursor.row);
+        self.ensure_line_exists(idx);
+        // Now write the character
+        let col = self.cursor.col;
+        let style = self.current_style;
+        if let Some(line) = self.lines.get_mut(idx) {
+            line.set(col, Cell::new(ch, style));
+            self.cursor.col += 1;
         }
-        self.cursor.col += 1;
     }
 
     pub fn new_line(&mut self) {
@@ -276,19 +304,32 @@ impl TerminalBuffer {
     pub fn scroll_up(&mut self, count: usize) {
         for _ in 0..count {
             if self.scroll_top == 0 {
-                let line = self.screen.remove(self.scroll_top);
-                self.add_to_scrollback(line);
+                // Scrolling full screen - add new line at bottom
+                // The old top line becomes history, server_screen_start advances
+                self.lines.push_back(Line::with_style(self.cols, self.current_style));
+                self.server_screen_start += 1;
+                self.trim_buffer();
             } else {
-                self.screen.remove(self.scroll_top);
+                // Scroll region - remove line at scroll_top, insert at scroll_bottom
+                let top_idx = self.server_screen_to_buffer(self.scroll_top);
+                let bottom_idx = self.server_screen_to_buffer(self.scroll_bottom);
+                if top_idx < self.lines.len() {
+                    self.lines.remove(top_idx);
+                    let insert_idx = bottom_idx.min(self.lines.len());
+                    self.lines.insert(insert_idx, Line::with_style(self.cols, self.current_style));
+                }
             }
-            self.screen.insert(self.scroll_bottom, Line::with_style(self.cols, self.current_style));
         }
     }
 
     pub fn scroll_down(&mut self, count: usize) {
         for _ in 0..count {
-            self.screen.remove(self.scroll_bottom);
-            self.screen.insert(self.scroll_top, Line::with_style(self.cols, self.current_style));
+            let top_idx = self.server_screen_to_buffer(self.scroll_top);
+            let bottom_idx = self.server_screen_to_buffer(self.scroll_bottom);
+            if bottom_idx < self.lines.len() {
+                self.lines.remove(bottom_idx);
+                self.lines.insert(top_idx, Line::with_style(self.cols, self.current_style));
+            }
         }
     }
 
@@ -329,33 +370,51 @@ impl TerminalBuffer {
     }
 
     pub fn erase_in_display(&mut self, mode: u8) {
+        let cursor_row = self.cursor.row;
+        let cursor_col = self.cursor.col;
+        let cols = self.cols;
+        let rows = self.rows;
+        let style = self.current_style;
+        // Only erase lines that exist - do NOT create new lines
+        let screen_start = self.server_screen_start;
+        Self::debug_log(&format!(
+            "[ERASE] mode={}, cursor=({},{}), rows={}, screen_start={}, total_lines={}",
+            mode, cursor_row, cursor_col, rows, screen_start, self.lines.len()
+        ));
         match mode {
             0 => {
                 // Erase from cursor to end of display
-                if let Some(line) = self.screen.get_mut(self.cursor.row) {
-                    line.clear_range(self.cursor.col, self.cols, self.current_style);
+                Self::debug_log(&format!(
+                    "[ERASE] Clearing from line {} (cursor_row={}) to line {} (rows-1={})",
+                    screen_start + cursor_row, cursor_row, 
+                    screen_start + rows.saturating_sub(1), rows.saturating_sub(1)
+                ));
+                if let Some(line) = self.lines.get_mut(screen_start + cursor_row) {
+                    line.clear_range(cursor_col, cols, style);
                 }
-                for row in (self.cursor.row + 1)..self.rows {
-                    if let Some(line) = self.screen.get_mut(row) {
-                        line.clear(self.current_style);
+                for row in (cursor_row + 1)..rows {
+                    if let Some(line) = self.lines.get_mut(screen_start + row) {
+                        line.clear(style);
                     }
                 }
             }
             1 => {
                 // Erase from start of display to cursor
-                for row in 0..self.cursor.row {
-                    if let Some(line) = self.screen.get_mut(row) {
-                        line.clear(self.current_style);
+                for row in 0..cursor_row {
+                    if let Some(line) = self.lines.get_mut(screen_start + row) {
+                        line.clear(style);
                     }
                 }
-                if let Some(line) = self.screen.get_mut(self.cursor.row) {
-                    line.clear_range(0, self.cursor.col + 1, self.current_style);
+                if let Some(line) = self.lines.get_mut(screen_start + cursor_row) {
+                    line.clear_range(0, cursor_col + 1, style);
                 }
             }
             2 | 3 => {
                 // Erase entire display
-                for line in &mut self.screen {
-                    line.clear(self.current_style);
+                for row in 0..rows {
+                    if let Some(line) = self.lines.get_mut(screen_start + row) {
+                        line.clear(style);
+                    }
                 }
             }
             _ => {}
@@ -363,11 +422,16 @@ impl TerminalBuffer {
     }
 
     pub fn erase_in_line(&mut self, mode: u8) {
-        if let Some(line) = self.screen.get_mut(self.cursor.row) {
+        let cursor_col = self.cursor.col;
+        let cols = self.cols;
+        let style = self.current_style;
+        let idx = self.server_screen_to_buffer(self.cursor.row);
+        // Only erase if line exists - do NOT create new lines
+        if let Some(line) = self.lines.get_mut(idx) {
             match mode {
-                0 => line.clear_range(self.cursor.col, self.cols, self.current_style),
-                1 => line.clear_range(0, self.cursor.col + 1, self.current_style),
-                2 => line.clear(self.current_style),
+                0 => line.clear_range(cursor_col, cols, style),
+                1 => line.clear_range(0, cursor_col + 1, style),
+                2 => line.clear(style),
                 _ => {}
             }
         }
@@ -376,40 +440,69 @@ impl TerminalBuffer {
     pub fn insert_lines(&mut self, count: usize) {
         let count = count.min(self.scroll_bottom - self.cursor.row + 1);
         for _ in 0..count {
-            if self.scroll_bottom < self.screen.len() {
-                self.screen.remove(self.scroll_bottom);
+            let bottom_idx = self.server_screen_to_buffer(self.scroll_bottom);
+            let cursor_idx = self.server_screen_to_buffer(self.cursor.row);
+            if bottom_idx < self.lines.len() {
+                self.lines.remove(bottom_idx);
             }
-            self.screen.insert(self.cursor.row, Line::with_style(self.cols, self.current_style));
+            self.lines.insert(cursor_idx, Line::with_style(self.cols, self.current_style));
         }
     }
 
     pub fn delete_lines(&mut self, count: usize) {
         let count = count.min(self.scroll_bottom - self.cursor.row + 1);
         for _ in 0..count {
-            if self.cursor.row < self.screen.len() {
-                self.screen.remove(self.cursor.row);
+            let cursor_idx = self.server_screen_to_buffer(self.cursor.row);
+            let bottom_idx = self.server_screen_to_buffer(self.scroll_bottom);
+            if cursor_idx < self.lines.len() {
+                self.lines.remove(cursor_idx);
             }
-            self.screen.insert(self.scroll_bottom, Line::with_style(self.cols, self.current_style));
+            let insert_idx = bottom_idx.min(self.lines.len());
+            self.lines.insert(insert_idx, Line::with_style(self.cols, self.current_style));
         }
     }
 
     pub fn insert_chars(&mut self, count: usize) {
-        if let Some(line) = self.screen.get_mut(self.cursor.row) {
+        let cursor_col = self.cursor.col;
+        let style = self.current_style;
+        let idx = self.server_screen_to_buffer(self.cursor.row);
+        // Only operate on lines that exist - do NOT create new lines
+        if let Some(line) = self.lines.get_mut(idx) {
             for _ in 0..count {
-                if self.cursor.col < line.len() {
+                if cursor_col < line.len() {
                     line.cells.pop();
-                    line.cells.insert(self.cursor.col, Cell { ch: ' ', style: self.current_style });
+                    line.cells.insert(cursor_col, Cell { ch: ' ', style });
                 }
             }
         }
     }
 
     pub fn delete_chars(&mut self, count: usize) {
-        if let Some(line) = self.screen.get_mut(self.cursor.row) {
+        let cursor_col = self.cursor.col;
+        let style = self.current_style;
+        let idx = self.server_screen_to_buffer(self.cursor.row);
+        // Only operate on lines that exist - do NOT create new lines
+        if let Some(line) = self.lines.get_mut(idx) {
             for _ in 0..count {
-                if self.cursor.col < line.len() {
-                    line.cells.remove(self.cursor.col);
-                    line.cells.push(Cell { ch: ' ', style: self.current_style });
+                if cursor_col < line.len() {
+                    line.cells.remove(cursor_col);
+                    line.cells.push(Cell { ch: ' ', style });
+                }
+            }
+        }
+    }
+
+    pub fn erase_chars(&mut self, count: usize) {
+        let cursor_col = self.cursor.col;
+        let style = self.current_style;
+        let idx = self.server_screen_to_buffer(self.cursor.row);
+        // Only operate on lines that exist - do NOT create new lines
+        if let Some(line) = self.lines.get_mut(idx) {
+            let end_col = (cursor_col + count).min(line.len());
+            for col in cursor_col..end_col {
+                if let Some(cell) = line.cells.get_mut(col) {
+                    cell.ch = ' ';
+                    cell.style = style;
                 }
             }
         }
@@ -466,34 +559,43 @@ impl TerminalBuffer {
         self.rows
     }
 
+    #[allow(dead_code)]
+    /// Get the screen portion of the buffer - deprecated, use get_line() instead
     pub fn screen(&self) -> &[Line] {
-        &self.screen
+        // VecDeque doesn't have contiguous slices
+        // Callers should use get_line() instead
+        &[]
     }
 
     #[allow(dead_code)]
     pub fn scrollback(&self) -> &VecDeque<Line> {
-        &self.scrollback
+        // For compatibility - return the whole buffer
+        // Actual scrollback is lines before server_screen_start
+        &self.lines
     }
 
     pub fn scrollback_len(&self) -> usize {
-        self.scrollback.len()
+        self.server_screen_start
     }
 
     pub fn total_lines(&self) -> usize {
-        self.scrollback.len() + self.rows
+        // Return the actual number of lines in the buffer
+        // Buffer starts empty and only contains lines that have been written to
+        self.lines.len()
     }
 
+
+    /// Get a line by absolute index (0 = oldest line in buffer)
     pub fn get_line(&self, index: usize) -> Option<&Line> {
-        if index < self.scrollback.len() {
-            self.scrollback.get(index)
-        } else {
-            self.screen.get(index - self.scrollback.len())
-        }
+        self.lines.get(index)
     }
 
     #[allow(dead_code)]
     pub fn clear_scrollback(&mut self) {
-        self.scrollback.clear();
+        // Keep only the screen lines
+        while self.lines.len() > self.rows {
+            self.lines.pop_front();
+        }
     }
 
     pub fn get_text_range(&self, start_row: usize, start_col: usize, end_row: usize, end_col: usize) -> String {
@@ -532,4 +634,3 @@ impl TerminalBuffer {
         self.default_bg = bg;
     }
 }
-

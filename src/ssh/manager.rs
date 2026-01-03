@@ -142,25 +142,12 @@ impl ManagedSession {
                 SshEvent::Connected => {
                     self.error_message = None;
                     self.reconnect_attempts = 0;
-                    if let Some(connection) = &self.connection {
-                        let cols = self.emulator.cols() as u32;
-                        let rows = self.emulator.rows() as u32;
-                        connection.resize(cols, rows);
-                    }
                 }
                 SshEvent::Data(data) => {
-                    // Check if at bottom before processing (for auto-scroll)
-                    let was_at_bottom = self.renderer.is_at_bottom(self.emulator.buffer());
-                    
                     self.emulator.process(&data);
                     
                     if let Some(new_title) = self.emulator.take_title() {
                         self.title = new_title;
-                    }
-                    
-                    // Auto-scroll if was at bottom, or if reset_scroll_on_output is enabled
-                    if was_at_bottom || self.config.reset_scroll_on_output {
-                        self.renderer.scroll_to_bottom(self.emulator.buffer());
                     }
                 }
                 SshEvent::Disconnected { natural } => {
@@ -198,12 +185,6 @@ impl ManagedSession {
         }
     }
 
-    pub fn resize(&mut self, cols: usize, rows: usize) {
-        self.emulator.resize(cols, rows);
-        if let Some(connection) = &self.connection {
-            connection.resize(cols as u32, rows as u32);
-        }
-    }
 
     pub fn state(&self) -> ConnectionState {
         if self.should_close {
