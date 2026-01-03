@@ -1,4 +1,4 @@
-use crate::config::{AuthMethod, BackspaceKey, LineEnding, SessionConfig};
+use crate::config::{AuthMethod, BackspaceKey, LineEnding, ResizeMethod, SessionConfig};
 use crate::debug;
 use anyhow::{Context, Result};
 use ssh2::{Channel, Session};
@@ -31,6 +31,7 @@ pub enum SshEvent {
 pub enum SshCommand {
     Write(Vec<u8>),
     Disconnect,
+    Resize { cols: u32, rows: u32 },
 }
 
 pub struct SshConnection {
@@ -171,6 +172,11 @@ impl SshConnection {
                     disconnect_natural = true;
                     break;
                 }
+                Ok(SshCommand::Resize { cols, rows }) => {
+                    if let Err(e) = Self::handle_resize(config, channel, cols, rows) {
+                        debug::log(&format!("[SSH {}] Resize error: {:?}", config.id, e));
+                    }
+                }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
                     disconnect_natural = false;
@@ -234,6 +240,32 @@ impl SshConnection {
 
     pub fn disconnect(&self) {
         let _ = self.command_tx.send(SshCommand::Disconnect);
+    }
+
+    pub fn resize_terminal(&self, cols: u32, rows: u32) {
+        let _ = self.command_tx.send(SshCommand::Resize { cols, rows });
+    }
+
+    fn handle_resize(config: &SessionConfig, channel: &mut Channel, cols: u32, rows: u32) -> Result<()> {
+        match config.resize_method {
+            ResizeMethod::Ssh => {
+                channel.request_pty("xterm-256color", None, Some((cols, rows, 0, 0)))?;
+            }
+            ResizeMethod::Ansi => {
+                let cmd = format!("\x1b[8;{};{}t", rows, cols);
+                channel.write_all(cmd.as_bytes())?;
+            }
+            ResizeMethod::Stty => {
+                let cmd = format!("stty cols {} rows {}\n", cols, rows);
+                channel.write_all(cmd.as_bytes())?;
+            }
+            ResizeMethod::XTerm => {
+                let cmd = format!("\x1b[7;{};{}t", rows, cols);
+                channel.write_all(cmd.as_bytes())?;
+            }
+            ResizeMethod::None => {}
+        }
+        Ok(())
     }
 
     fn convert_line_endings(&self, data: &[u8]) -> Vec<u8> {

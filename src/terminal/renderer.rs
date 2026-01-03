@@ -78,7 +78,7 @@ impl TerminalRenderer {
         focused: bool,
         invert_colors: bool,
         scroll_offset: usize,
-    ) -> (Response, usize, bool) {
+    ) -> (Response, usize, bool, usize, usize) {
         let buffer = emulator.buffer();
         let available = ui.available_size();
         let viewport_cols = (available.x / self.cell_width).floor() as usize;
@@ -103,7 +103,7 @@ impl TerminalRenderer {
         let terminal_rect = Rect::from_min_size(outer_rect.min, Vec2::new(content_width, terminal_height));
         if !ui.is_rect_visible(terminal_rect) {
             let is_at_bottom = new_scroll_offset >= max_scroll;
-            return (outer_response, new_scroll_offset, is_at_bottom);
+            return (outer_response, new_scroll_offset, is_at_bottom, viewport_cols, viewport_rows);
         }
         let pointer_pos = ui.ctx().pointer_latest_pos();
         let is_over_terminal = pointer_pos.map_or(false, |p| p.x >= outer_rect.min.x && p.x < outer_rect.min.x + content_width && p.y >= outer_rect.min.y && p.y < outer_rect.max.y);
@@ -167,7 +167,7 @@ impl TerminalRenderer {
             }
         }
         let is_at_bottom = new_scroll_offset >= max_scroll;
-        (outer_response, new_scroll_offset, is_at_bottom)
+        (outer_response, new_scroll_offset, is_at_bottom, viewport_cols, viewport_rows)
     }
 
     fn render_scrollbar(

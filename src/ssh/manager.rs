@@ -18,6 +18,7 @@ pub struct ManagedSession {
     should_close: bool,
     scroll_offset: usize,
     was_at_bottom: bool,
+    last_viewport_size: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -49,6 +50,7 @@ impl ManagedSession {
             should_close: false,
             scroll_offset: 0,
             was_at_bottom: true,
+            last_viewport_size: None,
         }
     }
 
@@ -255,6 +257,29 @@ impl ManagedSession {
                 self.config.reconnect_max_attempts
             )),
         }
+    }
+
+    pub fn check_and_handle_resize(&mut self, cols: usize, rows: usize) -> bool {
+        let new_size = (cols, rows);
+        if self.last_viewport_size == Some(new_size) {
+            return false;
+        }
+        if let Some(connection) = &self.connection {
+            connection.resize_terminal(cols as u32, rows as u32);
+        }
+        let buffer = self.emulator.buffer_mut();
+        let current_scroll_offset = self.scroll_offset;
+        let was_at_bottom = self.was_at_bottom;
+        let total_lines = buffer.total_lines();
+        buffer.resize(cols, rows);
+        let new_max_scroll = total_lines.saturating_sub(rows);
+        if was_at_bottom {
+            self.scroll_offset = usize::MAX;
+        } else {
+            self.scroll_offset = current_scroll_offset.min(new_max_scroll);
+        }
+        self.last_viewport_size = Some(new_size);
+        true
     }
 }
 

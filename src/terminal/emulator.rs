@@ -46,6 +46,10 @@ impl TerminalEmulator {
         &self.buffer
     }
 
+    pub fn buffer_mut(&mut self) -> &mut TerminalBuffer {
+        &mut self.buffer
+    }
+
     pub fn cursor_visible(&self) -> bool {
         match self.mode {
             TerminalMode::VT100 => self.vt100.cursor_visible(),

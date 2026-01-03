@@ -622,4 +622,10 @@ impl TerminalBuffer {
         self.default_fg = fg;
         self.default_bg = bg;
     }
+
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        self.cols = cols;
+        self.rows = rows;
+        self.scroll_bottom = rows.saturating_sub(1);
+    }
 }

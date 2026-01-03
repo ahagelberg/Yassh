@@ -1453,9 +1453,16 @@ impl eframe::App for YasshApp {
                     false
                 };
 
+                // Calculate viewport size and handle resize
+                let available = ui.available_size();
+                let cell_width = session.renderer.cell_width();
+                let cell_height = session.renderer.cell_height();
+                let viewport_cols = (available.x / cell_width).floor() as usize;
+                let viewport_rows = (available.y / cell_height).floor() as usize;
+                session.check_and_handle_resize(viewport_cols, viewport_rows);
                 // Render terminal
                 let current_scroll_offset = session.scroll_offset();
-                let (response, new_scroll_offset, is_at_bottom) = session.renderer.render(
+                let (response, new_scroll_offset, is_at_bottom, _viewport_cols, _viewport_rows) = session.renderer.render(
                     ui,
                     &session.emulator,
                     sel_mgr.selection(),
