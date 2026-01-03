@@ -49,7 +49,7 @@ fn setup_debug_logging() {
         );
         if let Ok(child) = Command::new("cmd.exe")
             .args([
-                "/c", "start", "Yassh Debug Console", "powershell.exe",
+                "/c", "start", "/min", "Yassh Debug Console", "powershell.exe",
                 "-NoProfile", "-Command", &script
             ])
             .spawn()
