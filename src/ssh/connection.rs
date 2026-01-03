@@ -1,4 +1,5 @@
 use crate::config::{AuthMethod, BackspaceKey, LineEnding, SessionConfig};
+use crate::debug;
 use anyhow::{Context, Result};
 use ssh2::{Channel, Session};
 use std::io::{Read, Write};
@@ -7,40 +8,6 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-
-fn debug_log(msg: &str) {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("yassh_debug.log")
-    {
-        let _ = writeln!(file, "{}", msg);
-        let _ = file.flush();
-    }
-}
-
-fn format_bytes(data: &[u8]) -> String {
-    const MAX_DISPLAY_LEN: usize = 100;
-    let display_data = if data.len() > MAX_DISPLAY_LEN {
-        &data[..MAX_DISPLAY_LEN]
-    } else {
-        data
-    };
-    let formatted: String = display_data.iter().map(|&b| {
-        match b {
-            0x00..=0x1F | 0x7F => format!("\\x{:02X}", b),
-            _ => (b as char).to_string(),
-        }
-    }).collect();
-    if data.len() > MAX_DISPLAY_LEN {
-        format!("{}...", formatted)
-    } else {
-        formatted
-    }
-}
 
 // Connection constants
 const READ_BUFFER_SIZE: usize = 4096;
@@ -97,24 +64,24 @@ impl SshConnection {
         event_tx: Sender<SshEvent>,
         command_rx: Receiver<SshCommand>,
     ) {
-        debug_log(&format!("[SSH {}] Connecting to {}:{}", config.id, config.host, config.port));
+        debug::log(&format!("[SSH {}] Connecting to {}:{}", config.id, config.host, config.port));
         *state.lock().unwrap() = ConnectionState::Connecting;
         let result = Self::establish_connection(&config);
         match result {
             Ok((session, mut channel)) => {
-                debug_log(&format!("[SSH {}] Connected", config.id));
+                debug::log(&format!("[SSH {}] Connected", config.id));
                 *state.lock().unwrap() = ConnectionState::Connected;
                 let _ = event_tx.send(SshEvent::Connected);
                 Self::run_session(&config, session, &mut channel, &state, &event_tx, &command_rx);
             }
             Err(e) => {
                 let error_msg = format!("{:#}", e);
-                debug_log(&format!("[SSH {}] Error: {}", config.id, error_msg));
+                debug::log(&format!("[SSH {}] Error: {}", config.id, error_msg));
                 *state.lock().unwrap() = ConnectionState::Error(error_msg.clone());
                 let _ = event_tx.send(SshEvent::Error(error_msg));
             }
         }
-        debug_log(&format!("[SSH {}] Connection thread ended", config.id));
+        debug::log(&format!("[SSH {}] Connection thread ended", config.id));
         *state.lock().unwrap() = ConnectionState::Disconnected;
     }
 
@@ -193,10 +160,9 @@ impl SshConnection {
         let mut disconnect_natural = false;
         loop {
             match command_rx.try_recv() {
-                Ok(SshCommand::Write(data)) => {
-                    debug_log(&format!("[SSH {}] TX: {} bytes: {:?}", config.id, data.len(), format_bytes(&data)));
-                    if let Err(e) = channel.write_all(&data) {
-                        debug_log(&format!("[SSH {}] Write error: {:?}", config.id, e));
+                Ok(SshCommand::Write(_data)) => {
+                    if let Err(e) = channel.write_all(&_data) {
+                        debug::log(&format!("[SSH {}] Write error: {:?}", config.id, e));
                         disconnect_natural = false;
                         break;
                     }
@@ -214,14 +180,13 @@ impl SshConnection {
             match channel.read(&mut read_buffer) {
                 Ok(0) => {
                     if channel.eof() {
-                        debug_log(&format!("[SSH {}] EOF", config.id));
+                        debug::log(&format!("[SSH {}] EOF", config.id));
                         disconnect_natural = true;
                         break;
                     }
                 }
                 Ok(n) => {
                     let data = read_buffer[..n].to_vec();
-                    debug_log(&format!("[SSH {}] RX: {} bytes: {:?}", config.id, n, format_bytes(&data)));
                     if event_tx.send(SshEvent::Data(data)).is_err() {
                         disconnect_natural = false;
                         break;
@@ -230,7 +195,7 @@ impl SshConnection {
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
                 Err(e) => {
-                    debug_log(&format!("[SSH {}] Read error: {:?}", config.id, e));
+                    debug::log(&format!("[SSH {}] Read error: {:?}", config.id, e));
                     disconnect_natural = false;
                     break;
                 }

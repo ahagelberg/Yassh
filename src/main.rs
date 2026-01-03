@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod config_dialog;
+mod debug;
 mod input;
 mod options_dialog;
 mod persistence;
@@ -18,6 +19,9 @@ use std::sync::Mutex;
 // Store the debug console process so we can kill it on exit
 static DEBUG_CONSOLE: Mutex<Option<std::process::Child>> = Mutex::new(None);
 
+// Set to false to disable the debug console window (logs will still be written to file)
+const ENABLE_DEBUG_CONSOLE: bool = true;
+
 fn setup_debug_logging() {
     use std::process::Command;
     
@@ -28,6 +32,9 @@ fn setup_debug_logging() {
     let _ = std::fs::write(&log_path, "=== Yassh Debug Log ===\n\n");
     
     // Open a new console window that tails the log file
+    if !ENABLE_DEBUG_CONSOLE {
+        return;
+    }
     #[cfg(windows)]
     {
         let log_path_str = log_path.to_string_lossy().to_string();
@@ -62,6 +69,9 @@ fn setup_debug_logging() {
 }
 
 pub fn cleanup_debug_console() {
+    if !ENABLE_DEBUG_CONSOLE {
+        return;
+    }
     #[cfg(windows)]
     {
         // The console monitors our PID and will exit automatically

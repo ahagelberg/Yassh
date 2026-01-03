@@ -1,7 +1,6 @@
+use crate::debug;
 use egui::Color32;
 use std::collections::VecDeque;
-use std::fs::OpenOptions;
-use std::io::Write;
 
 const DEFAULT_COLS: usize = 80;
 const DEFAULT_ROWS: usize = 24;
@@ -189,16 +188,6 @@ pub struct TerminalBuffer {
 }
 
 impl TerminalBuffer {
-    fn debug_log(msg: &str) {
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("yassh_debug.log")
-        {
-            let _ = writeln!(file, "{}", msg);
-            let _ = file.flush();
-        }
-    }
 
     pub fn new(max_scrollback: usize, default_fg: Color32, default_bg: Color32) -> Self {
         let rows = DEFAULT_ROWS;
@@ -377,14 +366,14 @@ impl TerminalBuffer {
         let style = self.current_style;
         // Only erase lines that exist - do NOT create new lines
         let screen_start = self.server_screen_start;
-        Self::debug_log(&format!(
+        debug::log(&format!(
             "[ERASE] mode={}, cursor=({},{}), rows={}, screen_start={}, total_lines={}",
             mode, cursor_row, cursor_col, rows, screen_start, self.lines.len()
         ));
         match mode {
             0 => {
                 // Erase from cursor to end of display
-                Self::debug_log(&format!(
+                debug::log(&format!(
                     "[ERASE] Clearing from line {} (cursor_row={}) to line {} (rows-1={})",
                     screen_start + cursor_row, cursor_row, 
                     screen_start + rows.saturating_sub(1), rows.saturating_sub(1)

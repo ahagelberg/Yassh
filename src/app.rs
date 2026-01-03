@@ -1,5 +1,6 @@
 use crate::config::{AppConfig, BellNotification, SessionFolder, Theme, ThemeColors};
 use crate::config_dialog::{ConfigDialog, DialogMode, DialogResult};
+use crate::debug;
 use crate::input::{InputHandler, InputResult};
 use crate::options_dialog::{OptionsDialog, OptionsResult};
 use crate::persistence::{
@@ -18,8 +19,6 @@ static TAB_INTERCEPTION_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomi
 
 // Global queue for intercepted Tab events
 static INTERCEPTED_TAB_EVENTS: std::sync::Mutex<Vec<(egui::Modifiers, egui::Key)>> = std::sync::Mutex::new(Vec::new());
-use std::fs::OpenOptions;
-use std::io::Write as IoWrite;
 use std::sync::Arc;
 use font_kit::source::SystemSource;
 use font_kit::properties::{Properties, Style, Weight};
@@ -128,16 +127,6 @@ pub struct YasshApp {
 }
 
 
-fn debug_log(msg: &str) {
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("yassh_debug.log")
-    {
-        let _ = writeln!(file, "{}", msg);
-        let _ = file.flush();
-    }
-}
 
 const TERMINAL_FONT_NAME: &str = "terminal_mono";
 
@@ -228,9 +217,9 @@ impl YasshApp {
         };
         // Restore open sessions
         if let Ok(open_ids) = load_open_sessions() {
-            debug_log(&format!("[DEBUG APP] Restoring {} open sessions: {:?}", open_ids.len(), open_ids));
+            debug::log(&format!("[DEBUG APP] Restoring {} open sessions: {:?}", open_ids.len(), open_ids));
             for id in open_ids {
-                debug_log(&format!("[DEBUG APP] Restoring session {}", id));
+                debug::log(&format!("[DEBUG APP] Restoring session {}", id));
                 if let Some(config) = app.persistence.get_session(id).cloned() {
                     let session_id = app.session_manager.add_session(config);
                     app.session_manager.connect_session(session_id);
@@ -1319,7 +1308,7 @@ impl eframe::App for YasshApp {
         if !self.theme_applied {
             Self::apply_theme(ctx, self.app_config.theme);
             self.theme_applied = true;
-            debug_log("[INIT] Theme applied on first frame");
+            debug::log("[INIT] Theme applied on first frame");
         }
         // Update font if active session's font changed
         if let Some(session) = self.session_manager.active_session() {
@@ -1415,7 +1404,7 @@ impl eframe::App for YasshApp {
             // Debug: log sidebar width changes
             let current_width = panel_response.response.rect.width();
             if (current_width - self.last_sidebar_width).abs() > 0.1 {
-                debug_log(&format!(
+                debug::log(&format!(
                     "[RESIZE] Frame {}: sidebar width changed from {:.1} to {:.1}",
                     self.frame_count, self.last_sidebar_width, current_width
                 ));
