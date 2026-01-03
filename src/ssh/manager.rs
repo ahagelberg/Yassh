@@ -16,6 +16,8 @@ pub struct ManagedSession {
     reconnect_attempts: u32,
     is_focused: bool,
     should_close: bool,
+    scroll_offset: usize,
+    was_at_bottom: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -45,6 +47,8 @@ impl ManagedSession {
             reconnect_attempts: 0,
             is_focused: false,
             should_close: false,
+            scroll_offset: 0,
+            was_at_bottom: true,
         }
     }
 
@@ -145,7 +149,10 @@ impl ManagedSession {
                 }
                 SshEvent::Data(data) => {
                     self.emulator.process(&data);
-                    
+                    if self.was_at_bottom || self.config.reset_scroll_on_output {
+                        self.scroll_offset = usize::MAX;
+                        self.was_at_bottom = true;
+                    }
                     if let Some(new_title) = self.emulator.take_title() {
                         self.title = new_title;
                     }
@@ -212,6 +219,20 @@ impl ManagedSession {
             .as_ref()
             .map(|c| c.backspace_sequence())
             .unwrap_or(&[0x7F])
+    }
+
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    pub fn set_scroll_offset_with_bottom(&mut self, offset: usize, is_at_bottom: bool) {
+        self.scroll_offset = offset;
+        self.was_at_bottom = is_at_bottom;
+    }
+
+    pub fn reset_scroll_to_bottom(&mut self) {
+        self.scroll_offset = usize::MAX;
+        self.was_at_bottom = true;
     }
 
     #[allow(dead_code)]

@@ -1200,9 +1200,12 @@ impl YasshApp {
         
         // Handle text input (respects keyboard layout)
         for text in text_events {
-            if let Some(session) = self.session_manager.active_session() {
+            if let Some(session) = self.session_manager.active_session_mut() {
                 // Convert text to bytes using UTF-8 encoding
                 session.send(text.as_bytes());
+                if session.config.reset_scroll_on_input {
+                    session.reset_scroll_to_bottom();
+                }
                 let session_id = session.id;
                 if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
                     sel_mgr.clear();
@@ -1211,8 +1214,11 @@ impl YasshApp {
         }
         // Handle Ctrl+C and Ctrl+X (intercepted from Copy/Cut events)
         if send_ctrl_c {
-            if let Some(session) = self.session_manager.active_session() {
+            if let Some(session) = self.session_manager.active_session_mut() {
                 session.send(&[0x03]); // Ctrl+C = ETX (End of Text)
+                if session.config.reset_scroll_on_input {
+                    session.reset_scroll_to_bottom();
+                }
                 let session_id = session.id;
                 if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
                     sel_mgr.clear();
@@ -1220,8 +1226,11 @@ impl YasshApp {
             }
         }
         if send_ctrl_x {
-            if let Some(session) = self.session_manager.active_session() {
+            if let Some(session) = self.session_manager.active_session_mut() {
                 session.send(&[0x18]); // Ctrl+X = CAN (Cancel)
+                if session.config.reset_scroll_on_input {
+                    session.reset_scroll_to_bottom();
+                }
                 let session_id = session.id;
                 if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
                     sel_mgr.clear();
@@ -1231,10 +1240,13 @@ impl YasshApp {
         // Process all key events - forward to terminal
         for (key, modifiers) in key_events {
             // Forward to terminal
-            if let Some(session) = self.session_manager.active_session() {
+            if let Some(session) = self.session_manager.active_session_mut() {
                 let backspace_seq = session.backspace_sequence().to_vec();
                 if let InputResult::Forward(data) = self.input_handler.handle_key(key, modifiers, &backspace_seq) {
                     session.send(&data);
+                    if session.config.reset_scroll_on_input {
+                        session.reset_scroll_to_bottom();
+                    }
                     let session_id = session.id;
                     if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
                         sel_mgr.clear();
@@ -1284,10 +1296,13 @@ impl eframe::App for YasshApp {
                     continue;
                 }
                 // Forward plain Tab and Shift+Tab to terminal
-                if let Some(session) = self.session_manager.active_session() {
+                if let Some(session) = self.session_manager.active_session_mut() {
                     let backspace_seq = session.backspace_sequence().to_vec();
                     if let InputResult::Forward(data) = self.input_handler.handle_key(key, modifiers, &backspace_seq) {
                         session.send(&data);
+                        if session.config.reset_scroll_on_input {
+                            session.reset_scroll_to_bottom();
+                        }
                         let session_id = session.id;
                         if let Some(sel_mgr) = self.selection_managers.get_mut(&session_id) {
                             sel_mgr.clear();
@@ -1450,14 +1465,17 @@ impl eframe::App for YasshApp {
                 };
 
                 // Render terminal
-                let response = session.renderer.render(
+                let current_scroll_offset = session.scroll_offset();
+                let (response, new_scroll_offset, is_at_bottom) = session.renderer.render(
                     ui,
                     &session.emulator,
                     sel_mgr.selection(),
                     bg_color,
                     !dialogs_visible,
                     invert_colors,
+                    current_scroll_offset,
                 );
+                session.set_scroll_offset_with_bottom(new_scroll_offset, is_at_bottom);
                 // Handle bell visual feedback
                 if let Some((start_time, bell_type)) = &self.bell_blink_timer {
                     let elapsed = start_time.elapsed();
@@ -1529,6 +1547,7 @@ impl eframe::App for YasshApp {
                             response.rect.min,
                             session.emulator.buffer(),
                             response.rect.height(),
+                            session.scroll_offset(),
                         ) {
                             sel_mgr.start(line, col);
                         }
@@ -1541,6 +1560,7 @@ impl eframe::App for YasshApp {
                             response.rect.min,
                             session.emulator.buffer(),
                             response.rect.height(),
+                            session.scroll_offset(),
                         ) {
                             sel_mgr.update(line, col);
                         }

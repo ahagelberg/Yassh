@@ -16,6 +16,8 @@ const CURSOR_UNDERLINE_THICKNESS_MULTIPLIER: f32 = 0.15;
 const CURSOR_UNDERLINE_MIN_THICKNESS: f32 = 2.0;
 const CURSOR_VERTICAL_WIDTH_MULTIPLIER: f32 = 0.1;
 const CURSOR_VERTICAL_MIN_WIDTH: f32 = 1.0;
+const SCROLLBAR_WIDTH: f32 = 12.0;
+const SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 20.0;
 
 pub struct TerminalRenderer {
     font_size: f32,
@@ -75,39 +77,55 @@ impl TerminalRenderer {
         background: Color32,
         focused: bool,
         invert_colors: bool,
-    ) -> Response {
+        scroll_offset: usize,
+    ) -> (Response, usize, bool) {
         let buffer = emulator.buffer();
-        // Viewport should fill available space, not be fixed to buffer.rows()
         let available = ui.available_size();
-        // Calculate how many rows and cols fit in available space
         let viewport_cols = (available.x / self.cell_width).floor() as usize;
         let viewport_rows = (available.y / self.cell_height).floor() as usize;
-        let desired_size = Vec2::new(
-            viewport_cols as f32 * self.cell_width,
-            viewport_rows as f32 * self.cell_height,
-        );
-        let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click_and_drag());
-        if !ui.is_rect_visible(rect) {
-            return response;
+        let terminal_width = viewport_cols as f32 * self.cell_width;
+        let terminal_height = viewport_rows as f32 * self.cell_height;
+        let total_lines = buffer.total_lines();
+        let max_scroll = if total_lines <= viewport_rows {
+            0
+        } else {
+            total_lines - viewport_rows
+        };
+        let mut new_scroll_offset = scroll_offset;
+        if new_scroll_offset == usize::MAX {
+            new_scroll_offset = max_scroll;
         }
-        let painter = ui.painter_at(rect);
+        let show_scrollbar = max_scroll > 0;
+        let content_width = terminal_width;
+        let total_width = content_width + if show_scrollbar { SCROLLBAR_WIDTH } else { 0.0 };
+        let desired_size = Vec2::new(total_width, terminal_height);
+        let (outer_rect, outer_response) = ui.allocate_exact_size(desired_size, Sense::click_and_drag());
+        let terminal_rect = Rect::from_min_size(outer_rect.min, Vec2::new(content_width, terminal_height));
+        if !ui.is_rect_visible(terminal_rect) {
+            let is_at_bottom = new_scroll_offset >= max_scroll;
+            return (outer_response, new_scroll_offset, is_at_bottom);
+        }
+        let pointer_pos = ui.ctx().pointer_latest_pos();
+        let is_over_terminal = pointer_pos.map_or(false, |p| p.x >= outer_rect.min.x && p.x < outer_rect.min.x + content_width && p.y >= outer_rect.min.y && p.y < outer_rect.max.y);
+        if is_over_terminal {
+            let scroll_delta = ui.input(|i| i.raw_scroll_delta.y);
+            if scroll_delta != 0.0 {
+                let lines_to_scroll = (scroll_delta / self.cell_height).round() as i32;
+                let new_offset_i32 = new_scroll_offset as i32 - lines_to_scroll;
+                let new_offset = new_offset_i32.max(0) as usize;
+                new_scroll_offset = new_offset.min(max_scroll);
+            }
+        }
+        new_scroll_offset = new_scroll_offset.min(max_scroll);
+        let visible_start = new_scroll_offset;
+        let visible_end = (visible_start + viewport_rows).min(total_lines);
+        let painter = ui.painter_at(terminal_rect);
         let bg_color = if emulator.reverse_video() {
             buffer.default_fg()
         } else {
             background
         };
-        painter.rect_filled(rect, 0.0, bg_color);
-        // Use viewport_rows to determine how many lines to show
-        // If buffer has fewer lines than viewport_rows, show all lines from the start
-        // Otherwise, show the last viewport_rows lines
-        let total = buffer.total_lines();
-        let visible_start = if total <= viewport_rows {
-            0  // Show all lines from the start
-        } else {
-            total - viewport_rows  // Show the last viewport_rows lines
-        };
-        let visible_end = total;
-        // Render lines
+        painter.rect_filled(terminal_rect, 0.0, bg_color);
         for line_idx in visible_start..visible_end {
             let screen_row = line_idx - visible_start;
             self.render_line(
@@ -115,7 +133,7 @@ impl TerminalRenderer {
                 buffer,
                 line_idx,
                 screen_row,
-                rect.min,
+                terminal_rect.min,
                 selection,
                 emulator.reverse_video(),
                 invert_colors,
@@ -124,12 +142,92 @@ impl TerminalRenderer {
         if focused && emulator.cursor_visible() {
             self.update_cursor_blink(ui.ctx().input(|i| i.time));
             if self.cursor_visible {
-                self.render_cursor(&painter, buffer, rect.min, viewport_rows, emulator.reverse_video(), invert_colors);
+                self.render_cursor(&painter, buffer, terminal_rect.min, viewport_rows, visible_start, emulator.reverse_video(), invert_colors);
             }
-            // Request repaint for cursor blink - use after() to avoid continuous repainting
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(CURSOR_BLINK_INTERVAL_MS));
         }
-        response
+        if show_scrollbar {
+            let scrollbar_rect = Rect::from_min_size(
+                Pos2::new(outer_rect.min.x + content_width, outer_rect.min.y),
+                Vec2::new(SCROLLBAR_WIDTH, terminal_height),
+            );
+            let scrollbar_response = ui.allocate_response(scrollbar_rect.size(), Sense::click_and_drag());
+            let new_offset = self.render_scrollbar(
+                ui,
+                scrollbar_rect,
+                scrollbar_response,
+                new_scroll_offset,
+                max_scroll,
+                total_lines,
+                viewport_rows,
+                background,
+            );
+            if let Some(new_offset_val) = new_offset {
+                new_scroll_offset = new_offset_val;
+            }
+        }
+        let is_at_bottom = new_scroll_offset >= max_scroll;
+        (outer_response, new_scroll_offset, is_at_bottom)
+    }
+
+    fn render_scrollbar(
+        &self,
+        ui: &mut Ui,
+        rect: Rect,
+        response: Response,
+        scroll_offset: usize,
+        max_scroll: usize,
+        total_lines: usize,
+        viewport_rows: usize,
+        _background: Color32,
+    ) -> Option<usize> {
+        let painter = ui.painter_at(rect);
+        let scrollbar_bg = Color32::from_rgba_unmultiplied(40, 40, 40, 255);
+        painter.rect_filled(rect, 0.0, scrollbar_bg);
+        if max_scroll == 0 {
+            return None;
+        }
+        let scrollbar_height = rect.height();
+        let thumb_height = (scrollbar_height * (viewport_rows as f32 / total_lines as f32)).max(SCROLLBAR_MIN_THUMB_HEIGHT);
+        let scrollable_height = scrollbar_height - thumb_height;
+        let thumb_position = if max_scroll > 0 {
+            (scroll_offset as f32 / max_scroll as f32) * scrollable_height
+        } else {
+            0.0
+        };
+        let thumb_rect = Rect::from_min_size(
+            Pos2::new(rect.min.x + 2.0, rect.min.y + thumb_position),
+            Vec2::new(SCROLLBAR_WIDTH - 4.0, thumb_height),
+        );
+        let thumb_color = if response.hovered() || response.dragged() {
+            Color32::from_rgba_unmultiplied(120, 120, 120, 255)
+        } else {
+            Color32::from_rgba_unmultiplied(80, 80, 80, 255)
+        };
+        painter.rect_filled(thumb_rect, 2.0, thumb_color);
+        let mut new_scroll_offset = None;
+        if response.dragged() {
+            if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                let relative_y = (pos.y - rect.min.y - thumb_height / 2.0).max(0.0).min(scrollable_height);
+                let new_offset = if scrollable_height > 0.0 {
+                    ((relative_y / scrollable_height) * max_scroll as f32).round() as usize
+                } else {
+                    0
+                };
+                new_scroll_offset = Some(new_offset.min(max_scroll));
+            }
+        } else if response.clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let relative_y = pos.y - rect.min.y;
+                let new_offset = if scrollable_height > 0.0 {
+                    ((relative_y / scrollable_height) * max_scroll as f32).round() as usize
+                } else {
+                    0
+                };
+                new_scroll_offset = Some(new_offset.min(max_scroll));
+            }
+        }
+        new_scroll_offset
     }
 
     fn render_line(
@@ -220,6 +318,7 @@ impl TerminalRenderer {
         buffer: &TerminalBuffer,
         origin: Pos2,
         actual_rows: usize,
+        visible_start: usize,
         reverse_video: bool,
         invert_colors: bool,
     ) {
@@ -229,15 +328,7 @@ impl TerminalRenderer {
         let cursor = buffer.cursor();
         let scrollback_len = buffer.scrollback_len();
         let cursor_line = scrollback_len + cursor.row;
-        // Calculate visible range based on actual window size (same as render())
-        let total = buffer.total_lines();
-        let visible_start = if total <= actual_rows {
-            0  // Show all lines from the start
-        } else {
-            total - actual_rows  // Show the last actual_rows lines
-        };
-        let visible_end = total;
-        // Only render cursor if it's within the visible viewport
+        let visible_end = visible_start + actual_rows;
         if cursor_line < visible_start || cursor_line >= visible_end {
             return;
         }
@@ -337,27 +428,18 @@ impl TerminalRenderer {
     }
 
 
-    pub fn cell_at_pos(&self, pos: Pos2, origin: Pos2, buffer: &TerminalBuffer, rect_height: f32) -> Option<(usize, usize)> {
+    pub fn cell_at_pos(&self, pos: Pos2, origin: Pos2, buffer: &TerminalBuffer, rect_height: f32, scroll_offset: usize) -> Option<(usize, usize)> {
         let relative = pos - origin;
         if relative.x < 0.0 || relative.y < 0.0 {
             return None;
         }
         let col = (relative.x / self.cell_width) as usize;
         let row = (relative.y / self.cell_height) as usize;
-        // Calculate actual rows from window height (same as render())
         let actual_rows = (rect_height / self.cell_height).floor() as usize;
         if col >= buffer.cols() || row >= actual_rows {
             return None;
         }
-        // Calculate which buffer line this screen row corresponds to
-        // Same calculation as render() - if total <= actual_rows, show from 0, otherwise show last N
-        let total = buffer.total_lines();
-        let visible_start = if total <= actual_rows {
-            0
-        } else {
-            total - actual_rows
-        };
-        let line_idx = visible_start + row;
+        let line_idx = scroll_offset + row;
         if line_idx >= buffer.total_lines() {
             return None;
         }

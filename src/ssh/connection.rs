@@ -1,4 +1,4 @@
-use crate::config::{AuthMethod, BackspaceKey, LineEnding, ResizeMethod, SessionConfig};
+use crate::config::{AuthMethod, BackspaceKey, LineEnding, SessionConfig};
 use anyhow::{Context, Result};
 use ssh2::{Channel, Session};
 use std::io::{Read, Write};
@@ -63,7 +63,6 @@ pub enum SshEvent {
 
 pub enum SshCommand {
     Write(Vec<u8>),
-    Resize(u32, u32),
     Disconnect,
 }
 
@@ -202,26 +201,6 @@ impl SshConnection {
                         break;
                     }
                 }
-                Ok(SshCommand::Resize(cols, rows)) => {
-                    match config.resize_method {
-                        ResizeMethod::Ssh => {
-                            let _ = channel.request_pty_size(cols, rows, None, None);
-                        }
-                        ResizeMethod::Ansi => {
-                            let resize_seq = format!("\x1b[8;{};{}t", rows, cols);
-                            let _ = channel.write_all(resize_seq.as_bytes());
-                        }
-                        ResizeMethod::Stty => {
-                            let stty_cmd = format!("stty rows {} cols {}\n", rows, cols);
-                            let _ = channel.write_all(stty_cmd.as_bytes());
-                        }
-                        ResizeMethod::XTerm => {
-                            let xterm_seq = format!("\x1b[4;{};{}t", rows * 16, cols * 8);
-                            let _ = channel.write_all(xterm_seq.as_bytes());
-                        }
-                        ResizeMethod::None => {}
-                    }
-                }
                 Ok(SshCommand::Disconnect) => {
                     disconnect_natural = true;
                     break;
@@ -287,9 +266,6 @@ impl SshConnection {
         self.send(key.as_bytes());
     }
 
-    pub fn resize(&self, cols: u32, rows: u32) {
-        let _ = self.command_tx.send(SshCommand::Resize(cols, rows));
-    }
 
     pub fn disconnect(&self) {
         let _ = self.command_tx.send(SshCommand::Disconnect);
