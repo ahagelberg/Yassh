@@ -1,4 +1,4 @@
-use crate::config::{AppConfig, BellNotification, SessionFolder, Theme, ThemeColors};
+use crate::config::{AppConfig, BellNotification, SessionFolder, Theme};
 use crate::config_dialog::{ConfigDialog, DialogMode, DialogResult};
 use crate::debug;
 use crate::input::{InputHandler, InputResult};
@@ -29,22 +29,6 @@ const MIN_SIDEBAR_WIDTH: f32 = 170.0;
 const MAX_SIDEBAR_WIDTH: f32 = 400.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 130.0;
 
-// Title bar constants
-const TITLE_BAR_HEIGHT: f32 = 30.0;
-const TITLE_BAR_SIDE_MARGIN: f32 = 12.0;
-const ICON_SIZE: f32 = 20.0;
-const BUTTON_WIDTH: f32 = 48.0;
-const CLOSE_X_SIZE: f32 = 6.0;
-const CLOSE_X_SIZE_HOVER: f32 = 8.0;
-const MAX_ICON_SIZE: f32 = 6.0;
-const MIN_ICON_SIZE: f32 = 6.0;
-
-// Icon drawing constants
-const ICON_STROKE_WIDTH: f32 = 1.5;
-const ICON_LINE_OFFSET: f32 = 3.0;
-const ICON_PROMPT_LINE_RATIO: f32 = 0.6;
-const TITLE_BAR_VERTICAL_PADDING: f32 = 4.0;
-
 // Windows API constants for bell sound
 #[cfg(windows)]
 const MB_ICONASTERISK: u32 = 0x00000040;
@@ -52,25 +36,10 @@ const MB_ICONASTERISK: u32 = 0x00000040;
 // Bell notification constants
 const BELL_BLINK_DURATION_MS: u64 = 100;
 
-// UI element constants
-const CLOSE_BUTTON_HOVER_STROKE_WIDTH: f32 = 1.5;
-const CLOSE_BUTTON_NORMAL_STROKE_WIDTH: f32 = 1.0;
-const WINDOW_ICON_SCALE_FACTOR: f32 = 1.5;
-const WINDOW_ICON_OFFSET_FACTOR: f32 = 0.5;
-
 
 // Welcome screen spacing
 const WELCOME_SCREEN_TOP_MARGIN: f32 = 100.0;
 const WELCOME_SCREEN_ELEMENT_SPACING: f32 = 20.0;
-
-// Resize handle width for borderless window
-const RESIZE_HANDLE_WIDTH: f32 = 4.0;
-// Minimum window size to prevent crashes
-const MIN_WINDOW_WIDTH: f32 = 300.0;
-const MIN_WINDOW_HEIGHT: f32 = 200.0;
-// Window border width and color
-const WINDOW_BORDER_WIDTH: f32 = 1.0;
-const WINDOW_BORDER_COLOR: Color32 = Color32::from_rgb(100, 100, 100);
 
 // Plugin to intercept Tab key events before egui processes them
 pub struct TabInterceptionPlugin;
@@ -124,8 +93,6 @@ pub struct YasshApp {
     last_sidebar_width: f32,
     current_font: String,
     bell_blink_timer: Option<(std::time::Instant, BellNotification)>,
-    window_resize_pending: Option<(usize, usize)>,
-    is_window_resizing: bool,
 }
 
 
@@ -216,8 +183,6 @@ impl YasshApp {
             last_sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             current_font: default_font,
             bell_blink_timer: None,
-            window_resize_pending: None,
-            is_window_resizing: false,
         };
         // Restore open sessions
         if let Ok(open_ids) = load_open_sessions() {
@@ -507,438 +472,99 @@ impl YasshApp {
         }
     }
 
-    fn show_resize_handles(&mut self, ctx: &Context) {
-        use egui::{Area, Order, Sense, CursorIcon};
-        let screen_rect = ctx.viewport_rect();
-        let handle_width = RESIZE_HANDLE_WIDTH;
-        let corner_size = handle_width * 2.0;
-        
-        let mut any_drag_started = false;
-        let mut any_drag_stopped = false;
-        
-        // Helper to create a resize handle
-        let create_resize_handle = |id: egui::Id, pos: egui::Pos2, size: egui::Vec2, cursor: CursorIcon, on_drag: Box<dyn Fn(egui::Vec2) -> egui::Vec2>, drag_started: &mut bool, drag_stopped: &mut bool| {
-            Area::new(id)
-                .order(Order::Foreground)
-                .fixed_pos(pos)
-                .constrain(true)
-                .show(ctx, |ui| {
-                    let response = ui.allocate_response(size, Sense::drag());
-                    if response.hovered() {
-                        ui.ctx().set_cursor_icon(cursor);
-                    }
-                    if response.drag_started() {
-                        *drag_started = true;
-                    }
-                    if response.dragged() {
-                        let delta = response.drag_delta();
-                        let mut new_size = on_drag(delta);
-                        // Clamp to minimum window size
-                        new_size.x = new_size.x.max(MIN_WINDOW_WIDTH);
-                        new_size.y = new_size.y.max(MIN_WINDOW_HEIGHT);
-                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(new_size));
-                    }
-                    if response.drag_stopped() {
-                        *drag_stopped = true;
-                    }
-                });
-        };
-        
-        // Corners first (so they take priority over edges)
-        // Top-left corner
-        create_resize_handle(
-            egui::Id::new("resize_top_left"),
-            egui::Pos2::new(screen_rect.min.x, screen_rect.min.y),
-            egui::Vec2::new(corner_size, corner_size),
-            CursorIcon::ResizeNorthWest,
-            Box::new(|delta| egui::Vec2::new(screen_rect.width() - delta.x, screen_rect.height() - delta.y)),
-            &mut any_drag_started,
-            &mut any_drag_stopped,
-        );
-        
-        // Top-right corner
-        create_resize_handle(
-            egui::Id::new("resize_top_right"),
-            egui::Pos2::new(screen_rect.max.x - corner_size, screen_rect.min.y),
-            egui::Vec2::new(corner_size, corner_size),
-            CursorIcon::ResizeNorthEast,
-            Box::new(|delta| egui::Vec2::new(screen_rect.width() + delta.x, screen_rect.height() - delta.y)),
-            &mut any_drag_started,
-            &mut any_drag_stopped,
-        );
-        
-        // Bottom-left corner
-        create_resize_handle(
-            egui::Id::new("resize_bottom_left"),
-            egui::Pos2::new(screen_rect.min.x, screen_rect.max.y - corner_size),
-            egui::Vec2::new(corner_size, corner_size),
-            CursorIcon::ResizeSouthWest,
-            Box::new(|delta| egui::Vec2::new(screen_rect.width() - delta.x, screen_rect.height() + delta.y)),
-            &mut any_drag_started,
-            &mut any_drag_stopped,
-        );
-        
-        // Bottom-right corner
-        create_resize_handle(
-            egui::Id::new("resize_bottom_right"),
-            egui::Pos2::new(screen_rect.max.x - corner_size, screen_rect.max.y - corner_size),
-            egui::Vec2::new(corner_size, corner_size),
-            CursorIcon::ResizeSouthEast,
-            Box::new(|delta| egui::Vec2::new(screen_rect.width() + delta.x, screen_rect.height() + delta.y)),
-            &mut any_drag_started,
-            &mut any_drag_stopped,
-        );
-        
-        // Edges (positioned to not overlap with corners)
-        // Left edge (excluding corners)
-        create_resize_handle(
-            egui::Id::new("resize_left"),
-            egui::Pos2::new(screen_rect.min.x, screen_rect.min.y + corner_size),
-            egui::Vec2::new(handle_width, screen_rect.height() - corner_size * 2.0),
-            CursorIcon::ResizeWest,
-            Box::new(|delta| egui::Vec2::new(screen_rect.width() - delta.x, screen_rect.height())),
-            &mut any_drag_started,
-            &mut any_drag_stopped,
-        );
-        
-        // Right edge (excluding corners)
-        create_resize_handle(
-            egui::Id::new("resize_right"),
-            egui::Pos2::new(screen_rect.max.x - handle_width, screen_rect.min.y + corner_size),
-            egui::Vec2::new(handle_width, screen_rect.height() - corner_size * 2.0),
-            CursorIcon::ResizeEast,
-            Box::new(|delta| egui::Vec2::new(screen_rect.width() + delta.x, screen_rect.height())),
-            &mut any_drag_started,
-            &mut any_drag_stopped,
-        );
-        
-        // Top edge (excluding corners)
-        create_resize_handle(
-            egui::Id::new("resize_top"),
-            egui::Pos2::new(screen_rect.min.x + corner_size, screen_rect.min.y),
-            egui::Vec2::new(screen_rect.width() - corner_size * 2.0, handle_width),
-            CursorIcon::ResizeNorth,
-            Box::new(|delta| egui::Vec2::new(screen_rect.width(), screen_rect.height() - delta.y)),
-            &mut any_drag_started,
-            &mut any_drag_stopped,
-        );
-        
-        // Bottom edge (excluding corners)
-        create_resize_handle(
-            egui::Id::new("resize_bottom"),
-            egui::Pos2::new(screen_rect.min.x + corner_size, screen_rect.max.y - handle_width),
-            egui::Vec2::new(screen_rect.width() - corner_size * 2.0, handle_width),
-            CursorIcon::ResizeSouth,
-            Box::new(|delta| egui::Vec2::new(screen_rect.width(), screen_rect.height() + delta.y)),
-            &mut any_drag_started,
-            &mut any_drag_stopped,
-        );
-        
-        if any_drag_started {
-            self.is_window_resizing = true;
-        }
-        if any_drag_stopped {
-            self.is_window_resizing = false;
-        }
-    }
-
-    fn show_window_border(&mut self, ctx: &Context) {
-        use egui::Area;
-        let screen_rect = ctx.viewport_rect();
-        let border_width = WINDOW_BORDER_WIDTH;
-        
-        // Draw border around the entire window
-        Area::new(egui::Id::new("window_border"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(screen_rect.min)
-            .constrain(true)
-            .show(ctx, |ui| {
-                let painter = ui.painter();
-                // Top border
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        screen_rect.min,
-                        egui::Vec2::new(screen_rect.width(), border_width)
-                    ),
-                    0.0,
-                    WINDOW_BORDER_COLOR,
-                );
-                // Bottom border
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::Pos2::new(screen_rect.min.x, screen_rect.max.y - border_width),
-                        egui::Vec2::new(screen_rect.width(), border_width)
-                    ),
-                    0.0,
-                    WINDOW_BORDER_COLOR,
-                );
-                // Left border
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        screen_rect.min,
-                        egui::Vec2::new(border_width, screen_rect.height())
-                    ),
-                    0.0,
-                    WINDOW_BORDER_COLOR,
-                );
-                // Right border
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::Pos2::new(screen_rect.max.x - border_width, screen_rect.min.y),
-                        egui::Vec2::new(border_width, screen_rect.height())
-                    ),
-                    0.0,
-                    WINDOW_BORDER_COLOR,
-                );
-            });
-    }
 
     fn show_menu_bar(&mut self, ctx: &Context) {
-        let theme_colors = ThemeColors::for_theme(self.app_config.theme);
-        
-        TopBottomPanel::top("menu_bar")
-            .frame(egui::Frame::NONE.fill(theme_colors.title_bar_bg))
-            .resizable(false)
-            .height_range(std::ops::RangeInclusive::new(TITLE_BAR_HEIGHT, TITLE_BAR_HEIGHT))
-            .show(ctx, |ui| {
-                // Make the title bar draggable
-                let title_bar_response = ui.interact(ui.available_rect_before_wrap(), ui.id().with("title_bar"), egui::Sense::drag());
-                if title_bar_response.dragged() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                }
-                ui.set_height(TITLE_BAR_HEIGHT);
-                ui.horizontal(|ui| {
-                    // Add left margin manually (not using inner_margin to avoid reducing available width)
-                    ui.add_space(TITLE_BAR_SIDE_MARGIN);
-                    // Program icon on the left
-                    let icon_rect = ui.allocate_rect(
-                        egui::Rect::from_min_size(ui.cursor().left_top(), egui::Vec2::new(ICON_SIZE, ICON_SIZE)),
-                        egui::Sense::click()
-                    );
-                    // Draw a simple terminal icon (two horizontal lines representing a terminal window)
-                    let painter = ui.painter();
-                    let icon_color = theme_colors.title_bar_icon;
-                    let icon_center = icon_rect.rect.center();
-                    // Draw terminal window frame
-                    painter.rect_stroke(
-                        icon_rect.rect,
-                        0.0,
-                        egui::Stroke::new(ICON_STROKE_WIDTH, icon_color),
-                        egui::StrokeKind::Outside,
-                    );
-                    // Draw terminal prompt lines
-                    let line_y1 = icon_center.y - ICON_LINE_OFFSET;
-                    let line_y2 = icon_center.y + ICON_LINE_OFFSET;
-                    let line_x_start = icon_rect.rect.left() + ICON_LINE_OFFSET;
-                    let line_x_end = icon_rect.rect.right() - ICON_LINE_OFFSET;
-                    painter.line_segment(
-                        [egui::Pos2::new(line_x_start, line_y1), egui::Pos2::new(line_x_end, line_y1)],
-                        egui::Stroke::new(CLOSE_BUTTON_NORMAL_STROKE_WIDTH, icon_color),
-                    );
-                    painter.line_segment(
-                        [egui::Pos2::new(line_x_start, line_y2), egui::Pos2::new(line_x_end * ICON_PROMPT_LINE_RATIO, line_y2)],
-                        egui::Stroke::new(CLOSE_BUTTON_NORMAL_STROKE_WIDTH, icon_color),
-                    );
-                    ui.add_space(TITLE_BAR_VERTICAL_PADDING);
-                    // Menu bar centered vertically with padding
-                    ui.vertical(|ui| {
-                        ui.add_space(4.0);
-                        egui::MenuBar::new().ui(ui, |ui| {
-                        // File menu
-                        ui.menu_button("File", |ui| {
-                            if ui.button("New Session...").clicked() {
-                                self.config_dialog.open_new();
-                                ui.close();
-                            }
-                            if ui.button("Quick Connect...").clicked() {
-                                self.config_dialog.open_quick_connect();
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui.button("New Folder").clicked() {
-                                let folder = SessionFolder::new(String::from("New Folder"));
-                                let folder_id = folder.id;
-                                self.persistence.add_folder(folder);
-                                let _ = self.persistence.save();
-                                self.folder_rename_dialog = Some((folder_id, String::from("New Folder")));
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui.button("Preferences...").clicked() {
-                                self.options_dialog.open(self.app_config.clone());
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui.button("Exit").clicked() {
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                            }
-                        });
-                        // Edit menu
-                        ui.menu_button("Edit", |ui| {
-                            let has_active = self.session_manager.active_session().is_some();
-                            if ui.add_enabled(has_active, egui::Button::new("Copy")).clicked() {
-                                self.copy_selection();
-                                ui.close();
-                            }
-                            if ui.add_enabled(has_active, egui::Button::new("Paste")).clicked() {
-                                self.paste();
-                                ui.close();
-                            }
-                        });
-                        // View menu
-                        ui.menu_button("View", |ui| {
-                            let sidebar_text = if self.sidebar_visible { "Hide Sidebar" } else { "Show Sidebar" };
-                            if ui.button(sidebar_text).clicked() {
-                                self.sidebar_visible = !self.sidebar_visible;
-                                ui.close();
-                            }
-                        });
-                        // Session menu
-                        ui.menu_button("Session", |ui| {
-                            let has_active = self.session_manager.active_session().is_some();
-                            if ui.add_enabled(has_active, egui::Button::new("Reconnect")).clicked() {
-                                if let Some(session) = self.session_manager.active_session_mut() {
-                                    session.disconnect();
-                                    session.connect();
-                                }
-                                ui.close();
-                            }
-                            if ui.add_enabled(has_active, egui::Button::new("Disconnect")).clicked() {
-                                if let Some(session) = self.session_manager.active_session_mut() {
-                                    session.disconnect();
-                                }
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui.add_enabled(has_active, egui::Button::new("Edit Connection Settings...")).clicked() {
-                                if let Some(session) = self.session_manager.active_session() {
-                                    // Edit the connection's runtime settings, not the stored session
-                                    let id = session.id;
-                                    self.config_dialog.open_edit_connection(id, session.config.clone());
-                                }
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui.add_enabled(has_active, egui::Button::new("Close Tab")).clicked() {
-                                self.close_active_session();
-                                ui.close();
-                            }
-                        });
-                        // Help menu
-                        ui.menu_button("Help", |ui| {
-                            if ui.button("About Yassh").clicked() {
-                                self.show_about_dialog = true;
-                                ui.close();
-                            }
-                        });
-                        });
-                    });
-                    // Window controls on the right
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Close button
-                        let close_response = ui.add_sized(
-                            [BUTTON_WIDTH, TITLE_BAR_HEIGHT],
-                            egui::Button::new("").fill(Color32::TRANSPARENT).frame(false)
-                        );
-                        if close_response.clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                // File menu
+                ui.menu_button("File", |ui| {
+                    if ui.button("New Session...").clicked() {
+                        self.config_dialog.open_new();
+                        ui.close();
+                    }
+                    if ui.button("Quick Connect...").clicked() {
+                        self.config_dialog.open_quick_connect();
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("New Folder").clicked() {
+                        let folder = SessionFolder::new(String::from("New Folder"));
+                        let folder_id = folder.id;
+                        self.persistence.add_folder(folder);
+                        let _ = self.persistence.save();
+                        self.folder_rename_dialog = Some((folder_id, String::from("New Folder")));
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Preferences...").clicked() {
+                        self.options_dialog.open(self.app_config.clone());
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Exit").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+                // Edit menu
+                ui.menu_button("Edit", |ui| {
+                    let has_active = self.session_manager.active_session().is_some();
+                    if ui.add_enabled(has_active, egui::Button::new("Copy")).clicked() {
+                        self.copy_selection();
+                        ui.close();
+                    }
+                    if ui.add_enabled(has_active, egui::Button::new("Paste")).clicked() {
+                        self.paste();
+                        ui.close();
+                    }
+                });
+                // View menu
+                ui.menu_button("View", |ui| {
+                    let sidebar_text = if self.sidebar_visible { "Hide Sidebar" } else { "Show Sidebar" };
+                    if ui.button(sidebar_text).clicked() {
+                        self.sidebar_visible = !self.sidebar_visible;
+                        ui.close();
+                    }
+                });
+                // Session menu
+                ui.menu_button("Session", |ui| {
+                    let has_active = self.session_manager.active_session().is_some();
+                    if ui.add_enabled(has_active, egui::Button::new("Reconnect")).clicked() {
+                        if let Some(session) = self.session_manager.active_session_mut() {
+                            session.disconnect();
+                            session.connect();
                         }
-                        // Draw X - ensure it's centered in the button
-                        let button_rect = close_response.rect;
-                        let center = button_rect.center();
-                        if close_response.hovered() {
-                            ui.painter().rect_filled(
-                                button_rect,
-                                0.0,
-                                theme_colors.close_button_hover
-                            );
-                            // Draw X on hover
-                            ui.painter().line_segment(
-                                [egui::Pos2::new(center.x - CLOSE_X_SIZE_HOVER, center.y - CLOSE_X_SIZE_HOVER), egui::Pos2::new(center.x + CLOSE_X_SIZE_HOVER, center.y + CLOSE_X_SIZE_HOVER)],
-                                egui::Stroke::new(CLOSE_BUTTON_HOVER_STROKE_WIDTH, theme_colors.close_button_hover_text)
-                            );
-                            ui.painter().line_segment(
-                                [egui::Pos2::new(center.x + CLOSE_X_SIZE_HOVER, center.y - CLOSE_X_SIZE_HOVER), egui::Pos2::new(center.x - CLOSE_X_SIZE_HOVER, center.y + CLOSE_X_SIZE_HOVER)],
-                                egui::Stroke::new(CLOSE_BUTTON_HOVER_STROKE_WIDTH, theme_colors.close_button_hover_text)
-                            );
-                        } else {
-                            // Draw X normally
-                            ui.painter().line_segment(
-                                [egui::Pos2::new(center.x - CLOSE_X_SIZE, center.y - CLOSE_X_SIZE), egui::Pos2::new(center.x + CLOSE_X_SIZE, center.y + CLOSE_X_SIZE)],
-                                egui::Stroke::new(CLOSE_BUTTON_NORMAL_STROKE_WIDTH, theme_colors.title_bar_text)
-                            );
-                            ui.painter().line_segment(
-                                [egui::Pos2::new(center.x + CLOSE_X_SIZE, center.y - CLOSE_X_SIZE), egui::Pos2::new(center.x - CLOSE_X_SIZE, center.y + CLOSE_X_SIZE)],
-                                egui::Stroke::new(CLOSE_BUTTON_NORMAL_STROKE_WIDTH, theme_colors.title_bar_text)
-                            );
+                        ui.close();
+                    }
+                    if ui.add_enabled(has_active, egui::Button::new("Disconnect")).clicked() {
+                        if let Some(session) = self.session_manager.active_session_mut() {
+                            session.disconnect();
                         }
-                        // Maximize/Restore button
-                        let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-                        let max_response = ui.add_sized(
-                            [BUTTON_WIDTH, TITLE_BAR_HEIGHT],
-                            egui::Button::new("").fill(Color32::TRANSPARENT).frame(false)
-                        );
-                        if max_response.clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.add_enabled(has_active, egui::Button::new("Edit Connection Settings...")).clicked() {
+                        if let Some(session) = self.session_manager.active_session() {
+                            // Edit the connection's runtime settings, not the stored session
+                            let id = session.id;
+                            self.config_dialog.open_edit_connection(id, session.config.clone());
                         }
-                        if max_response.hovered() {
-                            ui.painter().rect_filled(
-                                max_response.rect,
-                                0.0,
-                                theme_colors.button_hover
-                            );
-                        }
-                        // Draw maximize/restore icon
-                        let center = max_response.rect.center();
-                        let icon_color = theme_colors.title_bar_text;
-                        if is_maximized {
-                            // Restore icon (two overlapping squares)
-                            ui.painter().rect_stroke(
-                                egui::Rect::from_center_size(center, egui::Vec2::new(MAX_ICON_SIZE * WINDOW_ICON_SCALE_FACTOR, MAX_ICON_SIZE * WINDOW_ICON_SCALE_FACTOR)),
-                                0.0,
-                                egui::Stroke::new(CLOSE_BUTTON_NORMAL_STROKE_WIDTH, icon_color),
-                                egui::StrokeKind::Outside,
-                            );
-                            ui.painter().rect_stroke(
-                                egui::Rect::from_center_size(center + egui::Vec2::new(MAX_ICON_SIZE * WINDOW_ICON_OFFSET_FACTOR, MAX_ICON_SIZE * WINDOW_ICON_OFFSET_FACTOR), egui::Vec2::new(MAX_ICON_SIZE * WINDOW_ICON_SCALE_FACTOR, MAX_ICON_SIZE * WINDOW_ICON_SCALE_FACTOR)),
-                                0.0,
-                                egui::Stroke::new(CLOSE_BUTTON_NORMAL_STROKE_WIDTH, icon_color),
-                                egui::StrokeKind::Outside,
-                            );
-                        } else {
-                            // Maximize icon (single square)
-                            ui.painter().rect_stroke(
-                                egui::Rect::from_center_size(center, egui::Vec2::new(MAX_ICON_SIZE * WINDOW_ICON_SCALE_FACTOR, MAX_ICON_SIZE * WINDOW_ICON_SCALE_FACTOR)),
-                                0.0,
-                                egui::Stroke::new(CLOSE_BUTTON_NORMAL_STROKE_WIDTH, icon_color),
-                                egui::StrokeKind::Outside,
-                            );
-                        }
-                        // Minimize button
-                        let min_response = ui.add_sized(
-                            [BUTTON_WIDTH, TITLE_BAR_HEIGHT],
-                            egui::Button::new("").fill(Color32::TRANSPARENT).frame(false)
-                        );
-                        if min_response.clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                        }
-                        if min_response.hovered() {
-                            ui.painter().rect_filled(
-                                min_response.rect,
-                                0.0,
-                                theme_colors.button_hover
-                            );
-                        }
-                        // Draw minimize icon (horizontal line)
-                        let center = min_response.rect.center();
-                        let icon_color = theme_colors.title_bar_text;
-                        ui.painter().line_segment(
-                            [egui::Pos2::new(center.x - MIN_ICON_SIZE, center.y), egui::Pos2::new(center.x + MIN_ICON_SIZE, center.y)],
-                            egui::Stroke::new(1.0, icon_color)
-                        );
-                    });
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.add_enabled(has_active, egui::Button::new("Close Tab")).clicked() {
+                        self.close_active_session();
+                        ui.close();
+                    }
+                });
+                // Help menu
+                ui.menu_button("Help", |ui| {
+                    if ui.button("About Yassh").clicked() {
+                        self.show_about_dialog = true;
+                        ui.close();
+                    }
                 });
             });
+        });
     }
 
     fn show_about_dialog(&mut self, ctx: &Context) {
@@ -1495,13 +1121,7 @@ impl eframe::App for YasshApp {
                 let cell_height = session.renderer.cell_height();
                 let viewport_cols = (available.x / cell_width).floor() as usize;
                 let viewport_rows = (available.y / cell_height).floor() as usize;
-                let send_to_server = !self.is_window_resizing;
-                session.check_and_handle_resize(viewport_cols, viewport_rows, send_to_server);
-                if !self.is_window_resizing {
-                    self.window_resize_pending = None;
-                } else {
-                    self.window_resize_pending = Some((viewport_cols, viewport_rows));
-                }
+                session.check_and_handle_resize(viewport_cols, viewport_rows, true);
                 // Render terminal
                 let current_scroll_offset = session.scroll_offset();
                 let (response, new_scroll_offset, is_at_bottom, _viewport_cols, _viewport_rows) = session.renderer.render(
@@ -1652,18 +1272,6 @@ impl eframe::App for YasshApp {
                 }
             }
         });
-        // Show resize handles for borderless window
-        self.show_resize_handles(ctx);
-        // Send pending resize to server when drag stops
-        if !self.is_window_resizing {
-            if let Some((cols, rows)) = self.window_resize_pending.take() {
-                if let Some(session) = self.session_manager.active_session_mut() {
-                    session.check_and_handle_resize(cols, rows, true);
-                }
-            }
-        }
-        // Show window border
-        self.show_window_border(ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
